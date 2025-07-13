@@ -58,6 +58,7 @@ eltávolítottak
 elutasítsd
 elutasítod
 email
+emoji
 engedélyezd
 engedélyezheted
 erősítsd
@@ -120,11 +121,13 @@ kapcsolataid
 kapcsolódj
 kapcsold
 kattints
-kérd
-kérj
 keresd
 kezdd
 képeid
+kérd
+kérj
+kérjük
+kérlek
 készíts
 készítsd
 készítened
@@ -143,7 +146,9 @@ koppints
 követed
 közzéteszed
 küldd
+küld
 küldj
+küldje
 landolj
 leellenőriz
 lecseréled
@@ -181,6 +186,7 @@ névjegyeid
 nézd
 nyisd
 nyomd
+nyomj
 oldd
 olvasd
 opció
