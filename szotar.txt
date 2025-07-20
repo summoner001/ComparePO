@@ -181,6 +181,9 @@ mentésed
 mentsd
 menj
 metódus
+migrál
+migrálás
+migrálni
 módosításaid
 módosíthatod
 módosítottad
@@ -210,6 +213,7 @@ rólunk
 script
 segítség
 semmisítsd
+során
 számára
 számítógéped
 számodra
