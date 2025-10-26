@@ -1,6 +1,10 @@
 compare_po.py — leírás
 =======================
 
+A script a Gemini és a Copilot MI felhasználásával Vibe Coding készült!
+Éles környezetben tesztelve.
+---------
+
 Mire való
 ---------
 A script .po (gettext) fájlok ellenőrzésére és összehasonlítására szolgál. Két üzemmódban működik:
