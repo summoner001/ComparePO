@@ -89,10 +89,14 @@ Példa használat és tippek
 ------------------------
 - Gyors lint egyetlen fájlon:
   - python3 compare_po.py and.po
-  - Ha sok a találat, futtasd --debug-kal a részletekért.
+  - Ha sok a találat, futtasd --debug-gal a részletekért!
+  - <img width="1858" height="270" alt="Képernyőkép 2025-10-26 10-21-57" src="https://github.com/user-attachments/assets/5f078acb-bc7c-4090-891c-498e2aacc50d" />
+
 - Összehasonlítás két platform között (Android vs iOS):
   - python3 compare_po.py and.po ios.po
   - A kimenet megmutatja a közös kanonikus msgid-k számát és az eltérő fordítások listáját színekkel.
+  - <img width="1621" height="725" alt="Képernyőkép 2025-10-26 10-20-55" src="https://github.com/user-attachments/assets/5b7055b1-a9af-4228-ba9e-5a435661ee22" />
+
 - Ha lásd, hogy valami hamis-pozitív jön (pl. CDATA-val kapcsolatos): futtasd --debug és nézd meg a repr() sorokat — gyakran rejtett escape vagy eltérő placeholder a hibaforrás.
 
 Mi történik, ha találsz hibát a kimenetben?
