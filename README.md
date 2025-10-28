@@ -7,103 +7,77 @@ A script a Gemini és a Copilot MI felhasználásával Vibe Coding készült!
 
 Mire való
 ---------
-A script .po (gettext) fájlok ellenőrzésére és összehasonlítására szolgál. Két üzemmódban működik:
-- Összehasonlító mód (compare): két .po fájlt hasonlít össze, azonos (kanonizált) msgid-eket párosít, és kiírja azokat a bejegyzéseket, ahol a fordítások (msgstr-ek) szóalapú összehasonlításban eltérnek.
-- Lint / egyfájl-ellenőrzés (single-file): egy .po fájlt átvizsgál hibás/gyanus formázásokra (hibás vagy egyensúlytalan Markdown, nem lezárt CDATA, HTML tag egyensúlyhiány, ASCII ellipszis használata a magyar „…” helyett, egyenes idézőjelek a magyar tipográfia helyett), valamint tegeződő/utasító kifejezésekre egy beépített szótár alapján.
 
-Röviden: segít megtalálni fordítási inkonzisztenciákat és stilisztikai/technikai hibákat, amelyek lokalizációs vagy platformközi problémákhoz vezethetnek.
+A compare_po.py egy többfunkciós .po fájlokhoz készült eszköz. Segít a fordítási fájlok formátumellenőrzésében (CDATA/Markdown/HTML), írásjelek javításában, helyesírás-ellenőrzésben (magyar Hunspell szótárral), tegező/utasító szó-szűrésben, két .po fájl fordításainak összehasonlításában, valamint egyik platformról a másikra történő fordítás-kitöltésben (például Android ↔ iOS).
+Működés (röviden)
 
-Működés (hogyan dolgozik)
--------------------------
-- Betölti a .po fájlokat: ha telepítve van a polib, azt használja; ha nincs, akkor egy beépített, robusztusabb egyszerű parserrel dolgozik (többsoros msgid/msgstr és plurál msgstr[0] támogatás).
-- Minden msgid-hez létrehoz egy kanonikus kulcsot:
-  - eltávolítja a CDATA/HTML/Markdown formázás jelölőit (a látható szöveget megtartva),
-  - normalizálja a whitespace-et,
-  - a helyőrzőket (%s, %@, %1$s, %lld, %d, %%) egy {PH} tokenre normalizálja a párosításhoz — így a különböző placeholder-szintaxisok párosíthatók.
-- A fordításokat (msgstr) szóhalmazra bontja: először eltávolítja a formázást és a helyőrzőket, majd Unicode-normalizálás + kisbetűsítés után tokenizál (unicode-érzékeny szó-regex).
-- Ha egy párosított msgid esetén a két fordítás szóhalmazai különböznek, azt találatként visszaadja.
-- A lint-mód külön, context-aware ellenőrzéseket futtat minden bejegyzésen:
-  - CDATA nyitó/záró párosítás ellenőrzése
-  - Markdown jelölők (pl. `*`, `**`, `` ` ``, `~~`) páratlanságának keresése (ha nincs CDATA/HTML jelen)
-  - HTML tagek egyszerű egyensúly-ellenőrzése (CDATA esetén kikapcsolható)
-  - Ellipsis ellenőrzés: a látható szöveget ellenőrzi; ha tipográfiai ellipszis (U+2026, „…”) van, NEM riaszt; ha csak ASCII '...' van, riaszt
-  - Idézőjelek: ha a látható szövegben egyenes idézőjelek (' vagy ") vannak tipográfiai helyett, riaszt
-  - Tegező/utasító szavak: a beépített TEGEZODES_WORDS listát használva ellenőrzi a látható szövegben szereplő teljes szavakat; találat esetén figyelmeztet
-- A script context-aware módon dolgozik: először kibontja a CDATA-t és eltávolítja a HTML tageket, és csak a “látható” text node-okon végzi a stilisztikai ellenőrzéseket — így pl. a href="%@" nem okoz idézőjel- vagy ellipszis-figyelmeztetést.
+Beolvassa a .po fájl bejegyzéseit (polib telepítve esetén polib-ot használja, különben van egy beépített, egyszerű parser).
+A msgid-nek egy „kanonikus” kulcsot hoz létre (szöveg normalizálva, placeholder-ek tokenizálva), és ezen alapján párosítja/összehasonlítja bejegyzéseket különböző fájlok között.
+Formátum-ellenőrzések: CDATA párosítás, Markdown/HTML tagek egyensúlya, ASCII ellipszis használat, egyenes idézőjelek stb.
+Írásjelek javítása: idézőjelek (''/"" → tipográfiai „”), három pont → Unicode ellipszis (…), hosszú kötőjelek → egyszerű kötőjel (-); minden csere fuzzy flag-gel jelölhető a kimeneti fájlban.
+Kitöltés (fill): ha két fájlt adsz meg (forrás és cél), az üres fordításokat a forrásból másolja át, adaptálja a placeholder-eket, és fuzzy-vel jelzi őket. Alapértelmezésben kihagyja az egyszavas vagy kizárólag helyőrzőket, hacsak nem adod meg a -egyszavas opciót.
+Összehasonlítás: szóhalmaz-alapú ellenőrzés a normált fordítási szövegeken, így kis eltérések (pl. sorrend) helyett a tényleges tartalmi különbségeket emeli ki.
+Funkciók (főbb)
 
-Funkciók (összefoglalva)
-------------------------
-- Kétfájl-összehasonlítás (msgid alapú párosítás, placeholder-normalizálással)
-- Egyszeri fájl lint (format / typográfia / tegező szavak detektálása)
-- Placeholder-kezelés: %s, %@, %1$s, %lld, %d, %% stb. felismerése és normalizálása
-- CDATA/HTML/Markdown-sensitív feldolgozás (context-aware)
-- ANSI színek a terminál-kimenethez: címek/leírások kiemelése (piros, sárga, kék, magenta, cián)
-- --debug mód: részletes debug információk, repr() kimenetek a problémás bejegyzésekről
-- Könnyen szerkeszthető TEGEZODES_WORDS list a script tetején (magad bővítheted)
-- polib támogatás (ha telepítve van), különben beépített parser, kezel plurál msgstr[0] eseteket is
+formatcheck: CDATA/Markdown/HTML egyensúly-ellenőrzés.
+irasjelek: írásjelek javítása, új fájl létrehozása (javitott_irasjelek_<fájlnév>.po), változtatások fuzzy megjelölése.
+spellcheck: magyar helyesírás-ellenőrzés Hunspell-lal (hu_HU).
+tegezodes: tegező/utasító szavak felderítése a fordításokban (szerkeszthető TEGEZODES_WORDS lista a script elején).
+compare: két .po fordításainak összevetése kanonikus kulcs szerint, eltérések listázása.
+fillios / filland: kitölti a cél .po fájl üres msgstr-jeit a forrás .po megfelelő fordításaival (iOS <-> Android átvitelt megkönnyítve), fuzzy jelöléssel.
+egyszavas: kiegészíti a -fill* viselkedését, hogy egyszavas és csak-helyőrző stringeket is átmozgasson.
+--debug: részletesebb, hibakeresést segítő kimenet.
+Telepítés (Arch Linux)
 
-Telepítés
+Rendszerszintű csomagok:
 ---------
-1. Python 3.x megléte (ajánlott: 3.8+)
-   - Arch Linuxon általában előre telepített: python --version vagy python3 --version
-2. polib (nem kötelező, de ajánlott):
-   - Arch Linux pacman csomag: sudo pacman -S python-polib
-   - vagy pip: python3 -m pip install --user polib
-3. Mentsd el a scriptet compare_po.py néven UTF-8 kódolással (a fájl tartalmát a te scripttel pótold)
-   - pl. nano compare_po.py → beillesztés → Ctrl+O, Ctrl+X
-4. Adj futtathatóságot (opcionális):
-   - chmod +x compare_po.py
 
-Függőségek
------------
-- Kötelező: Python 3 (standard könyvtár modulok: re, os, unicodedata, html, ast, typing)
-- Ajánlott: polib (jobb .po kezelés, plurálok, edge-case-ek)
-- (Opcióként) ha további HTML parsingra van szükség, be lehet építeni BeautifulSoup-ot, de a jelenlegi script regex alapú tisztítást használ.
+Frissítsd a rendszert: sudo pacman -Syu
+Telepítsd a python3-at és hunspell-t: sudo pacman -S python hunspell
+A magyar Hunspell szótár elérhetősége disztribúciótól függően:
+Ha van hivatalos csomag (pl. hunspell-hu), telepítsd azt: sudo pacman -S hunspell-hu
+Ha nincs a hivatalos tárolóban, két lehetőséged van: a) AUR-ból telepíteni (pl. aur/ hunspell-hu) az AUR segédprogrammal, b) vagy letölteni a hu_HU.aff / hu_HU.dic fájlokat (pl. LibreOffice / OpenOffice kiegészítésekből) és elhelyezni őket /usr/share/hunspell/ alá (root jogosultsággal).
+Python-csomagok (ajánlott):
 
-Futtatás
---------
-- Egy fájl (lint ellenőrzés):
-  - python3 compare_po.py path/to/file.po
-  - vagy ./compare_po.py path/to/file.po (ha futtathatóvá tetted)
-- Két fájl (összehasonlítás):
-  - python3 compare_po.py path/to/first.po path/to/second.po
+Használhatsz system-wide pacman csomagokat, de egyszerűbb a pip: python -m pip install --user polib hunspell
+Megjegyzés: a python binding a hunspellhez (pip csomag neve egyszerűen hunspell) néha platformfüggő; ha pip telepítés nem működik, nézd meg, hogy van-e a disztribúciódhoz tartozó python-hunspell csomag vagy építsd az AUR-ból.
+Függőségek (Arch Linux)
 
-Kapcsolók / opciók
-------------------
-- --debug
-  - Részletesebb kimenetet ad: repr() formában is kiírja az eredeti msgid/msgstr stringeket, a kanonikus kulcsot és a szóhalmazokat. Hasznos rejtett karakterek, escape-ek és egyéb furcsaságok vizsgálatához.
-  - Példa: python3 compare_po.py and.po ios.po --debug
-- Visszatérési kódok:
-  - 0: sikeresen lefutott (lehet, hogy talált eltérést, de a script normálisan lefutott)
-  - >0: hiba (pl. hiányzó fájl, parser hiba stb.)
-- Színek:
-  - A script ANSI escape kódokat használ; GNOME Terminál, Konsole, iTerm2 és hasonlóokban működik. Ha a terminálod nem támogatja, a színek kódokban fognak megjelenni (nem veszélyes, csak kevésbé olvasható).
+Kötelező/erősen ajánlott:
+python (3.x)
+hunspell (rendszerszintű bináris + .dic/.aff fájlok a hu_HU szótárhoz)
+polib (python csomag, opcionális de kényelmes: kezeli a .po fájlokat)
+python-hunspell (pip: hunspell) — a script ezt használhatja a helyesírás-ellenőrzéshez
+Futtatás (Arch Linux)
 
-Szerkeszthető pontok a scriptben
--------------------------------
-- TEGEZODES_WORDS: a fájl tetején található halmaz — ide tehetsz további szavakat, törölhetsz vagy módosíthatsz.
-- PLACEHOLDER_PATTERNS: ha más placeholder-formátumokat használsz, itt bővítheted a mintákat.
-- MARKDOWN/HTML viselkedés: a check_markdown_balance és check_html_tag_balance függvények egyszerű heuristikákat használnak — ha finomítani szeretnéd (pl. specifikus tagek figyelése), ott nyugodtan módosíthatsz.
+A repository-ban: cd /útvonal/a/repo-hoz python3 compare_po.py -h
+Példák:
+Formátumellenőrzés egy fájlon: python3 compare_po.py lokalizacio.po -formatcheck
+Írásjelek javítása: python3 compare_po.py lokalizacio.po -irasjelek -> új fájl: javitott_irasjelek_lokalizacio.po
+Helyesírás-ellenőrzés: python3 compare_po.py lokalizacio.po -spellcheck
+Tegező szavak keresése: python3 compare_po.py lokalizacio.po -tegezodes
+Két fájl összehasonlítása: python3 compare_po.py forras.po cel.po -compare
+Kitöltés (Android -> iOS) (forrás: Android, cél: iOS): python3 compare_po.py android.po ios.po -fillios
+Kitöltés (iOS -> Android): python3 compare_po.py ios.po android.po -filland
+Ha szeretnéd az egyszavasokat is átvinni: python3 compare_po.py forras.po cel.po -fillios -egyszavas
+Hibakeresés részletes kimenettel: python3 compare_po.py lokalizacio.po -irasjelek --debug
+Kapcsolók használata (összefoglalva) PO Tool v1.2 - Használat -h Megjeleníti ezt a súgót
 
-Példa használat és tippek
-------------------------
-- Gyors lint egyetlen fájlon:
-  - python3 compare_po.py and.po
-  - Ha sok a találat, futtasd --debug-gal a részletekért!
-  - <img width="1858" height="270" alt="Képernyőkép 2025-10-26 10-21-57" src="https://github.com/user-attachments/assets/5f078acb-bc7c-4090-891c-498e2aacc50d" />
+Egy fájl csatolásakor: ./comparepo.py <fájl.po> [kapcsoló]
 
-- Összehasonlítás két platform között (Android vs iOS):
-  - python3 compare_po.py and.po ios.po
-  - A kimenet megmutatja a közös kanonikus msgid-k számát és az eltérő fordítások listáját színekkel.
-  - <img width="1621" height="725" alt="Képernyőkép 2025-10-26 10-20-55" src="https://github.com/user-attachments/assets/5b7055b1-a9af-4228-ba9e-5a435661ee22" />
+-formatcheck A CDATA, Markdown, HTML tag (pl. href) egyensúlyának ellenőrzése. -irasjelek Javítja az idézőjeleket ('', "" -> „”), ellipszist (... -> …), és kötőjeleket (–, — -> -). Új fájlt hoz létre: javitott_irasjelek_<fájlnév>.po (minden javítás fuzzy-ként jelölve) -spellcheck Helyesírás-ellenőrzés (Hunspell 'hu_HU' szótárral). -tegezodes A tegező/utasító szavak keresése a fordításokban. (A szótár: TEGEZODES_WORDS a szkript elején szerkeszthető.)
 
-- Ha lásd, hogy valami hamis-pozitív jön (pl. CDATA-val kapcsolatos): futtasd --debug és nézd meg a repr() sorokat — gyakran rejtett escape vagy eltérő placeholder a hibaforrás.
+Két fájl hozzáadásakor: ./comparepo.py <forrás.po> <cél.po> [kapcsoló]
 
-Mi történik, ha találsz hibát a kimenetben?
-------------------------------------------
-- Single-file módban a script megmutatja a problémás bejegyzéseket és a talált hibák listáját (pl. msgstr: ASCII ellipszis ('...')...). Ellenőrizd a kiírt msgstr-et; ha a probléma jogos, javítsd a .po fájlban (cseréld '...' → '…', vagy a " és ' → „ ”), majd futtasd újra.
-- Két-fájl összehasonlításnál a script felsorolja az eltéréseket; ha sok olyan eltérést látsz, amelyet nem szeretnél figyelembe venni, finomíthatod a PLACEHOLDER_PATTERNS-et vagy a canonicalize logic-ot.
+-compare Összehasonlítja a két .po fájl fordításait (szóhalmaz-alapú összehasonlítás normalizált, lecsupaszított szövegeken). -fillios Kitölti a <cél.po> (pl. iOS) üres fordításait a <forrás.po> (pl. Android) fordításaival, ha a kanonikus msgid szövegek tökéletesen megegyeznek. Figyelem: Alapértelmezetten kihagyja az egyszavas/csak-helyőrzős stringeket. Új fájl: fillios_<célfájlnév>.po -filland Kitölti a <cél.po> (pl. Android) üres fordításait a <forrás.po> (pl. iOS) fordításaival, ha a kanonikus msgid szövegek tökéletesen megegyeznek. Figyelem: Alapértelmezetten kihagyja az egyszavas/csak-helyőrzős stringeket. Új fájl: filland_<célfájlnév>.po -egyszavas A -filland vagy -fillios kapcsolóval együtt használva átviszi az egyszavas és csak-helyőrzőket is (pl.: "remove" vagy "%s"). Az új fájl neve ekkor: fillx_egyszavas_<célfájlnév>.po
 
-Záró gondolatok
---------------
-Ez a script célzottan arra készült, hogy a fordítások és a platformok közötti különbségeket (formázás, placeholder-ek, stilisztika) könnyebben megtaláld. A tegező-szótár rugalmasan szerkeszthető a script tetején. Ha szeretnéd, beépíthetek még opciókat (például JSON/CSV export a találatokhoz, külső szótár betöltése fájlból, vagy finomított HTML-parsing BeautifulSoup-pal), és beállíthatunk egy „ignore list”-et is, ha bizonyos msgid-kat automatikusan át szeretnél ugrani.
+--debug A hibakereséshez
+
+Megjegyzések, tippek
+---------
+
+A script fuzzy-vel jelöli a program által módosított bejegyzéseket; ez általában kívánatos, mert jelezni akarod a fordítóknak, hogy a fordítás generált vagy automatikusan módosított.
+A helyesírás-ellenőrzéshez szükség van a hunspell binárisra és a megfelelő hu_HU.dic / hu_HU.aff fájlokra; a Python binding önmagában nem elég.
+Ha a polib nincs telepítve, a beépített parser is működik, de polib sok edge-case kezelésénél stabilabb.
+A TEGEZODES_WORDS listát tetszőlegesen bővítheted a script elején, ha saját projekted stílusát máshogy akarod szabályozni.
+A script elején a main() függvény indításakor egy diagnosztikai sor található ("--- SCRIPT INDUL ---"), ez segít CI-kimenetben vagy futtatási naplókban gyorsan észrevenni, hogy a script elindult.
