@@ -5,79 +5,86 @@ A script a Gemini és a Copilot MI felhasználásával Vibe Coding készült!
 Éles környezetben tesztelve.
 ---------
 
-Mire való
----------
+# 🇭🇺 PO Tool v1.2 Dokumentáció
 
-A compare_po.py egy többfunkciós .po fájlokhoz készült eszköz. Segít a fordítási fájlok formátumellenőrzésében (CDATA/Markdown/HTML), írásjelek javításában, helyesírás-ellenőrzésben (magyar Hunspell szótárral), tegező/utasító szó-szűrésben, két .po fájl fordításainak összehasonlításában, valamint egyik platformról a másikra történő fordítás-kitöltésben (például Android ↔ iOS).
-Működés (röviden)
+**Korábbi fájlnév: `comparepo.py`**
 
-Beolvassa a .po fájl bejegyzéseit (polib telepítve esetén polib-ot használja, különben van egy beépített, egyszerű parser).
-A msgid-nek egy „kanonikus” kulcsot hoz létre (szöveg normalizálva, placeholder-ek tokenizálva), és ezen alapján párosítja/összehasonlítja bejegyzéseket különböző fájlok között.
-Formátum-ellenőrzések: CDATA párosítás, Markdown/HTML tagek egyensúlya, ASCII ellipszis használat, egyenes idézőjelek stb.
-Írásjelek javítása: idézőjelek (''/"" → tipográfiai „”), három pont → Unicode ellipszis (…), hosszú kötőjelek → egyszerű kötőjel (-); minden csere fuzzy flag-gel jelölhető a kimeneti fájlban.
-Kitöltés (fill): ha két fájlt adsz meg (forrás és cél), az üres fordításokat a forrásból másolja át, adaptálja a placeholder-eket, és fuzzy-vel jelzi őket. Alapértelmezésben kihagyja az egyszavas vagy kizárólag helyőrzőket, hacsak nem adod meg a -egyszavas opciót.
-Összehasonlítás: szóhalmaz-alapú ellenőrzés a normált fordítási szövegeken, így kis eltérések (pl. sorrend) helyett a tényleges tartalmi különbségeket emeli ki.
-Funkciók (főbb)
+Ez a dokumentum a fordítási segédeszköz használatát, működését és Arch Linux-os telepítését mutatja be.
 
-formatcheck: CDATA/Markdown/HTML egyensúly-ellenőrzés.
-irasjelek: írásjelek javítása, új fájl létrehozása (javitott_irasjelek_<fájlnév>.po), változtatások fuzzy megjelölése.
-spellcheck: magyar helyesírás-ellenőrzés Hunspell-lal (hu_HU).
-tegezodes: tegező/utasító szavak felderítése a fordításokban (szerkeszthető TEGEZODES_WORDS lista a script elején).
-compare: két .po fordításainak összevetése kanonikus kulcs szerint, eltérések listázása.
-fillios / filland: kitölti a cél .po fájl üres msgstr-jeit a forrás .po megfelelő fordításaival (iOS <-> Android átvitelt megkönnyítve), fuzzy jelöléssel.
-egyszavas: kiegészíti a -fill* viselkedését, hogy egyszavas és csak-helyőrző stringeket is átmozgasson.
---debug: részletesebb, hibakeresést segítő kimenet.
-Telepítés (Arch Linux)
+---
 
-Rendszerszintű csomagok:
----------
+## 📝 Áttekintés
 
-Frissítsd a rendszert: sudo pacman -Syu
-Telepítsd a python3-at és hunspell-t: sudo pacman -S python hunspell
-A magyar Hunspell szótár elérhetősége disztribúciótól függően:
-Ha van hivatalos csomag (pl. hunspell-hu), telepítsd azt: sudo pacman -S hunspell-hu
-Ha nincs a hivatalos tárolóban, két lehetőséged van: a) AUR-ból telepíteni (pl. aur/ hunspell-hu) az AUR segédprogrammal, b) vagy letölteni a hu_HU.aff / hu_HU.dic fájlokat (pl. LibreOffice / OpenOffice kiegészítésekből) és elhelyezni őket /usr/share/hunspell/ alá (root jogosultsággal).
-Python-csomagok (ajánlott):
+### Mire való
 
-Használhatsz system-wide pacman csomagokat, de egyszerűbb a pip: python -m pip install --user polib hunspell
-Megjegyzés: a python binding a hunspellhez (pip csomag neve egyszerűen hunspell) néha platformfüggő; ha pip telepítés nem működik, nézd meg, hogy van-e a disztribúciódhoz tartozó python-hunspell csomag vagy építsd az AUR-ból.
-Függőségek (Arch Linux)
+A **PO Tool** egy sokoldalú Python szkript, amelyet kifejezetten a Gettext `.po` (Portable Object) fordítási fájlok minőség-ellenőrzésére és karbantartására fejlesztettek. Célja, hogy automatizálja a gyakori fordítási feladatokat és biztosítsa a következetességet, különösen a platformok közötti (pl. Android, iOS) fordítások szinkronizálásakor és a magyar tipográfiai szabályok betartásakor.
 
-Kötelező/erősen ajánlott:
-python (3.x)
-hunspell (rendszerszintű bináris + .dic/.aff fájlok a hu_HU szótárhoz)
-polib (python csomag, opcionális de kényelmes: kezeli a .po fájlokat)
-python-hunspell (pip: hunspell) — a script ezt használhatja a helyesírás-ellenőrzéshez
-Futtatás (Arch Linux)
+### Működés
 
-A repository-ban: cd /útvonal/a/repo-hoz python3 compare_po.py -h
-Példák:
-Formátumellenőrzés egy fájlon: python3 compare_po.py lokalizacio.po -formatcheck
-Írásjelek javítása: python3 compare_po.py lokalizacio.po -irasjelek -> új fájl: javitott_irasjelek_lokalizacio.po
-Helyesírás-ellenőrzés: python3 compare_po.py lokalizacio.po -spellcheck
-Tegező szavak keresése: python3 compare_po.py lokalizacio.po -tegezodes
-Két fájl összehasonlítása: python3 compare_po.py forras.po cel.po -compare
-Kitöltés (Android -> iOS) (forrás: Android, cél: iOS): python3 compare_po.py android.po ios.po -fillios
-Kitöltés (iOS -> Android): python3 compare_po.py ios.po android.po -filland
-Ha szeretnéd az egyszavasokat is átvinni: python3 compare_po.py forras.po cel.po -fillios -egyszavas
-Hibakeresés részletes kimenettel: python3 compare_po.py lokalizacio.po -irasjelek --debug
-Kapcsolók használata (összefoglalva) PO Tool v1.2 - Használat -h Megjeleníti ezt a súgót
+A szkript a megadott `.po` fájl(oka)t Python bejegyzésekké (entitásokká) dolgozza fel.
 
-Egy fájl csatolásakor: ./comparepo.py <fájl.po> [kapcsoló]
+1.  **Kanonikus Azonosítás:** A stringek összehasonlítása előtt a szkript megtisztítja az `msgid` (eredeti) szövegeket a formázásoktól (HTML, CDATA, Markdown) és a helyőrzőket (`%s`, `%d`, `%1$s`, `@`) egy egységes tokenné (`{PH}`) alakítja. Ez teszi lehetővé a megbízható összehasonlítást és adatátvitelt a `-compare` és `-fill*` funkcióknál.
+2.  **Javítások és `fuzzy` jelölés:** A módosító funkciók (pl. `-irasjelek`, `-filland`) **új fájlt** hoznak létre. Minden változtatással érintett bejegyzést automatikusan **`#, fuzzy`** flagekkel jelöl meg, jelezve, hogy a fordítás emberi ellenőrzést igényel.
 
--formatcheck A CDATA, Markdown, HTML tag (pl. href) egyensúlyának ellenőrzése. -irasjelek Javítja az idézőjeleket ('', "" -> „”), ellipszist (... -> …), és kötőjeleket (–, — -> -). Új fájlt hoz létre: javitott_irasjelek_<fájlnév>.po (minden javítás fuzzy-ként jelölve) -spellcheck Helyesírás-ellenőrzés (Hunspell 'hu_HU' szótárral). -tegezodes A tegező/utasító szavak keresése a fordításokban. (A szótár: TEGEZODES_WORDS a szkript elején szerkeszthető.)
+---
 
-Két fájl hozzáadásakor: ./comparepo.py <forrás.po> <cél.po> [kapcsoló]
+## 🧩 Funkciók (Kapcsolók Használata)
 
--compare Összehasonlítja a két .po fájl fordításait (szóhalmaz-alapú összehasonlítás normalizált, lecsupaszított szövegeken). -fillios Kitölti a <cél.po> (pl. iOS) üres fordításait a <forrás.po> (pl. Android) fordításaival, ha a kanonikus msgid szövegek tökéletesen megegyeznek. Figyelem: Alapértelmezetten kihagyja az egyszavas/csak-helyőrzős stringeket. Új fájl: fillios_<célfájlnév>.po -filland Kitölti a <cél.po> (pl. Android) üres fordításait a <forrás.po> (pl. iOS) fordításaival, ha a kanonikus msgid szövegek tökéletesen megegyeznek. Figyelem: Alapértelmezetten kihagyja az egyszavas/csak-helyőrzős stringeket. Új fájl: filland_<célfájlnév>.po -egyszavas A -filland vagy -fillios kapcsolóval együtt használva átviszi az egyszavas és csak-helyőrzőket is (pl.: "remove" vagy "%s"). Az új fájl neve ekkor: fillx_egyszavas_<célfájlnév>.po
+### PO Tool v1.2 - Használat
 
---debug A hibakereséshez
+| Kapcsoló | Leírás |
+| :--- | :--- |
+| **`-h`** | Megjeleníti ezt a súgót. |
+| **`--debug`** | Bővebb kimenetet biztosít a szkript működéséről és a belső változókról. |
 
-Megjegyzések, tippek
----------
+### Egy fájl csatolásakor:
 
-A script fuzzy-vel jelöli a program által módosított bejegyzéseket; ez általában kívánatos, mert jelezni akarod a fordítóknak, hogy a fordítás generált vagy automatikusan módosított.
-A helyesírás-ellenőrzéshez szükség van a hunspell binárisra és a megfelelő hu_HU.dic / hu_HU.aff fájlokra; a Python binding önmagában nem elég.
-Ha a polib nincs telepítve, a beépített parser is működik, de polib sok edge-case kezelésénél stabilabb.
-A TEGEZODES_WORDS listát tetszőlegesen bővítheted a script elején, ha saját projekted stílusát máshogy akarod szabályozni.
-A script elején a main() függvény indításakor egy diagnosztikai sor található ("--- SCRIPT INDUL ---"), ez segít CI-kimenetben vagy futtatási naplókban gyorsan észrevenni, hogy a script elindult.
+**Formátum:** `./po_tool.py <fájl.po> [kapcsoló]`
+
+| Kapcsoló | Leírás |
+| :--- | :--- |
+| **`-formatcheck`** | **Formázási Hibaellenőrzés.** Ellenőrzi az `msgid` és `msgstr` bejegyzéseket a következőkre: **CDATA** blokkok egyensúlya (`<![CDATA[` vs `]]>`), **Markdown** jelölők egyensúlya (`**`, `__`, `~~`), és **HTML tag-ek** egyensúlya (nyitó vs. záró tag). |
+| **`-irasjelek`** | **Tipográfiai Javítás.** Keresi és cseréli a következőket, majd új fájlt ír: <ul><li>Egyenes idézőjelek: `''` és `"` helyett a magyar tipográfiai megfelelője: **`„`** és **`”`**.</li><li>ASCII ellipszis: `...` helyett a tipográfiai **`…`** karakter.</li><li>Hosszú kötőjelek: **`–`** (en-dash) és **`—`** (em-dash) helyett a magyar **`-`** (kiskötőjel).</li></ul> **Kimeneti fájlnév:** `javitott_irasjelek_<fájlnév>.po` |
+| **`-spellcheck`** | **Helyesírás-ellenőrzés.** A telepített Hunspell 'hu_HU' szótárral ellenőrzi az `msgstr` bejegyzések helyesírását. |
+| **`-tegezodes`** | **Tegeződés/Utasítás Szűrő.** Megkeresi azokat az `msgstr` fordításokat, amelyek a szkriptben definiált `TEGEZODES_WORDS` listában szereplő szavakat tartalmazzák. (A szótár a szkript tetején szerkeszthető.) |
+
+### Két fájl hozzáadásakor:
+
+**Formátum:** `./po_tool.py <forrás.po> <cél.po> [kapcsoló]`
+
+| Kapcsoló | Leírás |
+| :--- | :--- |
+| **`-compare`** | **Fordítások Összehasonlítása.** Összehasonlítja a két .po fájl fordításait, amelyek azonos kanonikus `msgid`-vel rendelkeznek. Eltérésnek számít, ha a két `msgstr` **szóhalmaza nem egyezik meg** (formázások és helyőrzők nélkül). |
+| **`-fillios`** | **Android -> iOS Kitöltés.** Kitölti a **`<cél.po>`** (pl. iOS) üres fordításait a **`<forrás.po>`** (pl. Android) fordításaival, ha a kanonikus `msgid` szövegek tökéletesen megegyeznek. **Kimeneti fájlnév:** `fillios_<célfájlnév>.po` |
+| **`-filland`** | **iOS -> Android Kitöltés.** Kitölti a **`<cél.po>`** (pl. Android) üres fordításait a **`<forrás.po>`** (pl. iOS) fordításaival, ha a kanonikus `msgid` szövegek tökéletesen megegyeznek. **Kimeneti fájlnév:** `filland_<célfájlnév>.po` |
+| **`-egyszavas`** | **Kiegészítő opció!** A `-filland` vagy `-fillios` kapcsolóval együtt használva **átviszi** az egyszavas és csak helyőrzőkből álló stringeket (pl.: `"remove"` vagy `"%s"`), amelyeket a szkript alapértelmezetten kihagy. **Kimeneti fájlnév:** `fillx_egyszavas_<célfájlnév>.po` |
+
+---
+
+## 💻 Telepítés és Futtatás (Arch Linux)
+
+### Függőségek (Arch Linux)
+
+A szkript futtatásához szükséges Arch Linux csomagok és Python modulok:
+
+| Elem | Arch Csomag | Telepítési Parancs | Cél |
+| :--- | :--- | :--- | :--- |
+| **Python 3** | `python` | `sudo pacman -S python` | A szkript futtatásához. |
+| **Hunspell** | `python-hunspell` | `sudo pacman -S python-hunspell` | A Python Hunspell modul a `-spellcheck` funkcióhoz. |
+| **Szótár** | `hunspell-hu` | `sudo pacman -S hunspell-hu` | A magyar szótárfájl a helyesírás-ellenőrzéshez. |
+| **Polib (ajánlott)** | `polib` (pip) | `pip install polib` | Robusztusabb `.po` fájlkezeléshez. |
+
+### Futtatás (Arch Linux)
+
+1.  **Futtatási Jogosultság Beállítása:**
+    ```bash
+    chmod +x po_tool.py
+    ```
+
+2.  **Példák Futtatásra (Explicit Python 3 hívással):**
+
+    | Feladat | Parancs |
+    | :--- | :--- |
+    | Helyesírás-ellenőrzés | `python3 ./po_tool.py android.po -spellcheck` |
+    | Írásjelek javítása | `python3 ./po_tool.py ios.po -irasjelek` |
+    | Kitöltés egyszavas opcióval | `python3 ./po_tool.py forras.po cel.po -fillios -egyszavas` |
