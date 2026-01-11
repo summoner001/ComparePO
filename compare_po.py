@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-po_tool.py
+Unified PO Tool (Egyesített PO Eszköz)
 
-Egyesített .po eszköz a formátum-ellenőrzéshez, helyesírás-ellenőrzéshez,
-írásjelek javításához, tegeződés-szűréshez és platformok közötti
-fordítás-kitöltéshez (Android <-> iOS).
+Egyesíti az extractpo.py, tegezodes.py és comparepo.py funkcióit egyetlen,
+korszerűsített eszközben.
 
-Használat:
-  ./po_tool.py -h
-  ./po_tool.py file.po [kapcsoló]
-  ./po_tool.py file1.po file2.po [kapcsoló]
+Főbb funkciók:
+- Szövegkinyerés (Extract)
+- Intelligens tegeződés-ellenőrzés (Spacy NLP alapon)
+- Összehasonlítás (Compare)
+- Kitöltés (Fill iOS/Android között)
+- Formátum és helyesírás-ellenőrzés
+- Merge HU-EN fájlok
 """
 from __future__ import annotations
 import sys
@@ -20,66 +22,190 @@ import html
 import unicodedata
 import ast
 import argparse
-from typing import Dict, List, Tuple, Optional, Set
+import glob
+import json
+import yaml
+from typing import Dict, List, Tuple, Optional, Set, Any
+from datetime import datetime
+from difflib import SequenceMatcher
 
 # --- Konfiguráció és színek ---
 RESET = "\033[0m"
 BOLD = "\033[1m"
 RED = "\033[31m"
+GREEN = "\033[32m"
 YELLOW = "\033[33m"
 BLUE = "\033[34m"
 MAGENTA = "\033[35m"
 CYAN = "\033[36m"
+SIMILARITY_THRESHOLD = 0.70
+
+# --- HTML CSS Template (A tegezodes.py alapján, kiegészítve a diff stílusokkal) ---
+HTML_TEMPLATE_FULL = """<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+    <style>
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #2c3e50;
+        }}
+        .container {{
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+        }}
+        h1 {{
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }}
+        h2 {{
+            color: #34495e;
+            margin-top: 30px;
+            font-size: 1.2em;
+        }}
+        /* ENTRY STÍLUSOK (Tegezodes.py stílus + Comparepo kiegészítések) */
+        .entry {{
+            background-color: #f8f9fa;
+            border-left: 4px solid #3498db;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 0 5px 5px 0;
+            overflow: hidden;
+        }}
+        .entry-header {{ 
+            /* Comparepo kompatibilitás */
+            font-weight: bold; font-size: 14px; color: #57606a; margin-bottom: 5px;
+        }}
+        .entry-body {{ 
+            /* Comparepo kompatibilitás */
+            font-family: monospace; font-size: 14px; white-space: pre-wrap; word-break: break-all; 
+        }}
+        
+        .msgid {{
+            color: #7f8c8d;
+            font-weight: bold;
+            margin-bottom: 10px;
+            padding: 8px;
+            background-color: #ecf0f1;
+            border-radius: 4px;
+            display: block;
+        }}
+        .msgstr {{
+            color: #2c3e50;
+            margin-bottom: 10px;
+            padding: 8px;
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            line-height: 1.8;
+            display: block;
+        }}
+        
+        /* Tegeződés specifikus */
+        .tegezo {{
+            background-color: #ffebee;
+            color: #c62828;
+            font-weight: bold;
+            padding: 2px 4px;
+            border-radius: 3px;
+            border: 1px solid #ffcdd2;
+        }}
+        .highlight {{
+            background-color: #fff3cd;
+            padding: 10px;
+            border-left: 4px solid #ffc107;
+            margin: 10px 0;
+        }}
+        
+        /* Stats Block */
+        .stats {{
+            background-color: #e8f4fc;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }}
+        .count {{
+            display: inline-block;
+            background-color: #3498db;
+            color: white;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.9em;
+            margin-left: 10px;
+        }}
+        .warning {{
+            background-color: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 0 5px 5px 0;
+        }}
+
+        /* COMPARE / DIFF STÍLUSOK (A comparepo-ból integrálva) */
+        .diff-row {{ display: flex; flex-direction: column; gap: 5px; }}
+        .diff-line {{ display: block; padding: 2px 5px; }}
+        .del-line {{ color: #24292f; }}
+        .add-line {{ color: #24292f; }}
+        .diff-del {{ background-color: #ffebe9; color: #cf222e; text-decoration: inherit; }}
+        .diff-add {{ background-color: #dafbe1; color: #1a7f37; text-decoration: inherit; }}
+        .label {{ display: inline-block; width: 150px; font-weight: bold; color: #57606a; user-select: none; }}
+        
+        .issue-item {{ color: #cf222e; margin-left: 20px; }}
+        .highlight-err {{ background-color: #ffebe9; color: #cf222e; font-weight: bold; border-bottom: 2px solid #cf222e; }}
+
+        footer {{
+            margin-top: 40px;
+            text-align: center;
+            color: #7f8c8d;
+            font-size: 0.9em;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>{title}</h1>
+        
+        {stats_block}
+        
+        <div class="report-content">
+            {content_html}
+        </div>
+
+        <footer>
+            Előállítva: {timestamp} | Unified PO Tool
+        </footer>
+    </div>
+</body>
+</html>
+"""
 
 # --- Regexek és beállítások ---
 WORD_RE = re.compile(r"[\w]+(?:-[\w]+)*", re.UNICODE)
-
-PLACEHOLDER_PATTERNS = [
-    r"%\d+\$[sd@]",      # %1$s, %2$@, %1$d stb.
-    r"%lld",             # %lld
-    r"%[sd@u%]",          # %s, %d, %@, %u, %%
-]
+PLACEHOLDER_PATTERNS = [r"%\d+\$[sd@]", r"%lld", r"%[sd@u%]"]
 PLACEHOLDER_RE = re.compile("|".join(f"(?:{p})" for p in PLACEHOLDER_PATTERNS))
 PLACEHOLDER_TOKEN = "{PH}"
-
-# Markdown / HTML tagek regex egy egyszerű tisztításhoz
 MARKDOWN_HTML_TAG_RE = re.compile(r'<[^>]+>|<!\[CDATA\[|\]\]>|(\*\*|__|\*|_|`|~~)')
 
-# --- TEGEZŐDÉS / UTASÍTÓ SZÓTÁR ---
-TEGEZODES_WORDS = {
-"adakozz","add","adj","adataid","adatbázisod","adatbázisodat","adhatsz","adminisztrál","akarod","akarsz",
-"aktuális","aktiváld","alkalmazd","applikáció","archiváld","archiválod","állítsd","általad","átnevezed",
-"beállításaid","beimportál","beintegrál","beléphetsz","belépsz","beléptél","betöltöd","beszúrod","bezárhatod",
-"bezárod","bezártad","blokkold","blokkolhatod","blokkoltad","blokkoltak","címed","csatlakozz","csatlakoztál",
-"csevegéseid","csevegj","csoportjaid","csoportod","csoportodhoz","csúsztasd","dekódol","dekódolás","dokumentumaid",
-"elfelejtetted","elfogadd","elfogadod","elfogadtad","elküldöd","ellenőrizd","elment","elmented","elolvasod",
-"elolvasom","eltávolítottak","elutasítsd","elutasítod","email","emoji","engedélyezd","engedélyezheted","erősítsd",
-"eszközeid","eszközöd","eszközödön","értesítésed","exportáld","exportálod","fájljaid","feladod","felcsatol",
-"felhasználóneved","felhasználónevedet","feloldottad","feltelepít","felülírod","felvitel","felvitele","fejleszd",
-"figyelj","fiókod","fiókodhoz","font","foglald","folytasd","frissíted","frissítsd","generál","generálás","gépeld",
-"gépelj","gyártsd","győződj","hagyd","használhatsz","használhatod","használd","használj","hitelesítsd","hozd",
-"húzd","igazolj","illeszd","illesztened","implementációja","implementálás","importáld","importálod","indítsd",
-"irányítószámod","írd","írj","jelszavad","jelentsd","jelentetted","jelentheted","jelöld","javítod","javítsd",
-"kapcsolataid","kapcsolódj","kapcsold","kattints","keresd","kerül","kezdd","képeid","kérd","kérj","kérjük",
-"kérlek","készíts","készítsd","készítened","készülék","készülj","kiexportál","kiléphetsz","kilépsz","kimásol",
-"kirúgtak","kitöltötted","kivágod","kívánod","kívánja","komponens","koppints","követed","közzéteszed",
-"küldd","küldj","landolj","leellenőriz","lecseréled","legenerál","legyél","legyőzted","letilthatod",
-"letöltöd","link","lépj","maradj","másolnod","meghívóid","meghódítottad","megnézem","megnézed","megnyitod","megosztod",
-"megtapasztal","megtekinted","megváltoztathatod","megváltoztattad","módosításaid","módosíthatod","módosítottad","módosítsd","mented","mentésed","mentsd","menj","metódus",
-"mégsem","neved","névjegyeid","nézd","nyisd","nyomd","nyomj",
-"oldd","olvasd","opció","opciók","opcionális","permanens","problémáid","profilod","próbáld","próbálsz","pusztítsd",
-"reagáltál","rejtsd","relé","rólunk","script","segítség","semmisítsd","számítógéped","számodra",
-"szerkesztetted","szerkeszd","szeretnéd","szeretnél","szerver","szerverei","szervereid","szerverek","szobáid","szúrd",
-"szüneteltesd","találhatod","találhatsz","találtál","támogasd","távolítsd","te","telefonod","termelj","tied",
-"tilthatod","tiltsd","titkosítsd","töltsd","törlöd","töröld","töröljük","törölnöd","üdvözöllek","ügyelj","üzeneted",
-"ütköztél","üss","válaszd","válassz","változtasd","vedd","vegyél","verziód","vesd","vidd","videóid","vigyázz",
-"visszafejleszted","vonhatod","zárd","zárold"
-}
+# --- SPELLCHECK FILTEREK ---
+ICON_EMOJI_RE = re.compile(r':[\w]+:')
+COLOR_TAG_RE = re.compile(r'\[(?:accent|red|lightgray|green|blue|yellow|orange|purple|cyan|magenta|gray|black|white)?\]')
+ANNOTATION_RE = re.compile(r'@[\wáéíóöőúüűÁÉÍÓÖŐÚÜŰ]+')
+COLOR_CODE_RE = re.compile(r'%[0-9a-fA-F]{6}')
 
 # --- Hunspell inicializálás ---
 try:
     import hunspell
-    # Általános elérési utak Linux/macOS rendszereken
     HUNSPELL_PATHS = [
         ('/usr/share/hunspell/hu_HU.dic', '/usr/share/hunspell/hu_HU.aff'),
         ('/usr/share/myspell/dicts/hu_HU.dic', '/usr/share/myspell/dicts/hu_HU.aff'),
@@ -92,124 +218,336 @@ try:
                 HS_OBJ = hunspell.HunSpell(dic_path, aff_path)
                 break
             except Exception:
-                continue # Hiba esetén próbáljuk a következőt
+                continue
     if not HS_OBJ:
-        # Ez a figyelmeztetés jelenik meg, ha a szótárfájlok hiányoznak
-        print(f"{YELLOW}Figyelmeztetés: Hunspell 'hu_HU' szótár nem található.{RESET}", file=sys.stderr)
-        print(f"{YELLOW}A '-spellcheck' funkció nem lesz elérhető.{RESET}", file=sys.stderr)
+        pass # Később jelezzük, ha kell
 except ImportError:
     HS_OBJ = None
-    # Ez a figyelmeztetés jelenik meg, ha a Python hunspell csomag hiányzik
-    print(f"{YELLOW}Figyelmeztetés: 'hunspell' Python csomag nincs telepítve.{RESET}", file=sys.stderr)
-    print(f"{YELLOW}A '-spellcheck' funkció nem lesz elérhető. Telepítés: pip install hunspell{RESET}", file=sys.stderr)
+
+# --- Spacy / Polib inicializálás (Lazy load where needed, but imported here) ---
+try:
+    import polib
+except ImportError:
+    polib = None
+
+# Spacy-t a TegezoChecker osztályban töltjük be, hogy ne lassítsa a többi funkciót, ha nincs rá szükség.
+
+# =============================================================================
+# TEGEZŐDÉS CHECKER OSZTÁLY (tegezodes.py alapján)
+# =============================================================================
+
+class TegezoChecker:
+    def __init__(self):
+        """Előkészíti a HuSpaCy NLP modellt"""
+        import spacy
+        print(f"{CYAN}⏳ HuSpaCy modell betöltése…{RESET}")
+        try:
+            self.nlp = spacy.load("hu_core_news_lg")
+            print(f"{GREEN}✅ Modell betöltve{RESET}")
+        except Exception as e:
+            print(f"{RED}❌ Hiba a modell betöltésekor: {e}{RESET}")
+            print(f"{YELLOW}Telepítse: python -m spacy download hu_core_news_lg{RESET}")
+            sys.exit(1)
+    
+    def find_tegezo_words(self, text):
+        """Megkeresi a tegező szavakat egy szövegben"""
+        if not text or not text.strip():
+            return [], text
+        
+        doc = self.nlp(text)
+        tegezo_words = []
+        positions = []
+        
+        for token in doc:
+            morph = token.morph.to_dict()
+            
+            # 1. Második személyű igék (te/ti)
+            if token.pos_ in ("VERB", "AUX"):
+                if morph.get("Person") == "2":
+                    tegezo_words.append(token.text)
+                    positions.append((token.idx, token.idx + len(token.text)))
+            
+            # 2. Második személyű birtokos főnevek (te/ti)
+            elif token.pos_ in ("NOUN", "PROPN", "PRON"):
+                if (morph.get("Number[psor]") == "Sing" and 
+                    morph.get("Person[psor])") == "2"):
+                    tegezo_words.append(token.text)
+                    positions.append((token.idx, token.idx + len(token.text)))
+            
+            # 3. Felszólító mód (második személy)
+            elif morph.get("Mood") == "Imp":
+                tegezo_words.append(token.text)
+                positions.append((token.idx, token.idx + len(token.text)))
+        
+        # Kiemelés alkalmazása
+        if positions:
+            positions.sort()
+            merged_positions = []
+            current_start, current_end = positions[0]
+            
+            for start, end in positions[1:]:
+                if start <= current_end:
+                    current_end = max(current_end, end)
+                else:
+                    merged_positions.append((current_start, current_end))
+                    current_start, current_end = start, end
+            merged_positions.append((current_start, current_end))
+            
+            highlighted_text = text
+            for start, end in reversed(merged_positions):
+                word = text[start:end]
+                highlighted = f'<span class="tegezo">{word}</span>'
+                highlighted_text = highlighted_text[:start] + highlighted + highlighted_text[end:]
+            
+            return tegezo_words, highlighted_text
+        
+        return tegezo_words, text
+    
+    def process_po_file(self, po_file_path):
+        """Feldolgoz egy PO-fájlt"""
+        if not polib:
+            print(f"{RED}Hiba: 'polib' modul hiányzik.{RESET}")
+            return None
+
+        print(f"📖 PO-fájl betöltése: {po_file_path}")
+        try:
+            po = polib.pofile(po_file_path)
+        except Exception as e:
+            print(f"{RED}❌ Hiba a PO-fájl betöltésekor: {e}{RESET}")
+            return None
+        
+        results = []
+        total_entries = len(po)
+        tegezo_entries_count = 0
+        total_tegezo_words = 0
+        
+        print(f"🔍 {total_entries} bejegyzés ellenőrzése...")
+        
+        for i, entry in enumerate(po, 1):
+            if i % 100 == 0:
+                print(f"  Ellenőrzött bejegyzések: {i}/{total_entries}", end='\r')
+            
+            entry_result = {
+                'msgid': entry.msgid,
+                'msgstr': entry.msgstr,
+                'msgstr_plural': entry.msgstr_plural if hasattr(entry, 'msgstr_plural') else {},
+                'tegezo_words': [],
+                'has_tegezo': False,
+                'highlighted_msgstr': entry.msgstr,
+                'highlighted_plural': {}
+            }
+            
+            # Egyes szám
+            if entry.msgstr:
+                words, highlighted = self.find_tegezo_words(entry.msgstr)
+                if words:
+                    entry_result['tegezo_words'].extend(words)
+                    entry_result['has_tegezo'] = True
+                    entry_result['highlighted_msgstr'] = highlighted
+            
+            # Többes szám
+            if hasattr(entry, 'msgstr_plural') and entry.msgstr_plural:
+                for key, text in entry.msgstr_plural.items():
+                    if text:
+                        words, highlighted = self.find_tegezo_words(text)
+                        if words:
+                            entry_result['tegezo_words'].extend(words)
+                            entry_result['has_tegezo'] = True
+                            entry_result['highlighted_plural'][key] = highlighted
+            
+            if entry_result['has_tegezo']:
+                tegezo_entries_count += 1
+                total_tegezo_words += len(entry_result['tegezo_words'])
+                results.append(entry_result)
+        
+        print(f"\n✅ Kész! Találatok:")
+        print(f"   • Összes bejegyzés: {total_entries}")
+        print(f"   • Tegező bejegyzések: {tegezo_entries_count}")
+        print(f"   • Talált tegező szavak: {total_tegezo_words}")
+        
+        return {
+            'results': results,
+            'stats': {
+                'total_entries': total_entries,
+                'tegezo_entries': tegezo_entries_count,
+                'total_tegezo_words': total_tegezo_words,
+                'filename': os.path.basename(po_file_path)
+            }
+        }
+
+    def escape_html(self, text):
+        if not text: return ""
+        return html.escape(text)
 
 
-# --- Segédfüggvények (Egyesítve) ---
+# =============================================================================
+# SEGÉDFÜGGVÉNYEK (comparepo.py + extractpo.py)
+# =============================================================================
 
 def colored(text: str, color: str) -> str:
-    """Szöveg színezése."""
-    if not text:
-        return ""
+    if not text: return ""
     return f"{color}{text}{RESET}"
 
+def save_html_report_unified(filename: str, title: str, content_html: str, stats_block: str = ""):
+    """A közös, modern HTML sablont használó mentési függvény."""
+    ts = datetime.now().strftime('%Y.%m.%d. %H:%M:%S')
+    full_html = HTML_TEMPLATE_FULL.format(
+        title=title,
+        stats_block=stats_block,
+        content_html=content_html,
+        timestamp=ts
+    )
+    try:
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(full_html)
+        print(colored(f"HTML jelentés elmentve: {filename}", GREEN))
+    except Exception as e:
+        print(colored(f"Hiba a HTML mentésekor: {e}", RED))
+
+def ask_to_save_report(html_content_entries: List[str], filename_base: str, title: str, stats_html: str = ""):
+    """Kérdőív a lista elmentéséről."""
+    if not html_content_entries:
+        return
+    try:
+        user_input = input(colored(f"Elmenti a fenti listát HTML-formátumban? (Y/n) ", CYAN)).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        user_input = ''
+        
+    if user_input in ['', 'y', 'i', 'igen']:
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        html_filename = f"{filename_base}_{ts}.html"
+        joined_html = "\n".join(html_content_entries)
+        save_html_report_unified(html_filename, title, joined_html, stats_html)
+    elif user_input == 'n':
+        print(colored("A lista elmentése kihagyva.", YELLOW))
+        return  # Csak kilép, nem kér további Entert
+    else:
+        # Default: auto-mentés
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        html_filename = f"{filename_base}_{ts}.html"
+        joined_html = "\n".join(html_content_entries)
+        save_html_report_unified(html_filename, title, joined_html, stats_html)
+
+def get_diff_viz(s1: str, s2: str) -> Tuple[str, str, str, str]:
+    """Karakter-szintű diff előállítása ANSI és HTML-formátumban."""
+    matcher = SequenceMatcher(None, s1, s2)
+    ansi_s1, ansi_s2 = [], []
+    html_s1, html_s2 = [], []
+
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        text1 = s1[i1:i2]
+        text2 = s2[j1:j2]
+        safe_text1 = html.escape(text1)
+        safe_text2 = html.escape(text2)
+
+        if op == 'equal':
+            ansi_s1.append(text1); ansi_s2.append(text2)
+            html_s1.append(safe_text1); html_s2.append(safe_text2)
+        elif op == 'replace':
+            ansi_s1.append(colored(text1, RED)); ansi_s2.append(colored(text2, GREEN))
+            html_s1.append(f'<span class="diff-del">{safe_text1}</span>')
+            html_s2.append(f'<span class="diff-add">{safe_text2}</span>')
+        elif op == 'delete':
+            ansi_s1.append(colored(text1, RED))
+            html_s1.append(f'<span class="diff-del">{safe_text1}</span>')
+        elif op == 'insert':
+            ansi_s2.append(colored(text2, GREEN))
+            html_s2.append(f'<span class="diff-add">{safe_text2}</span>')
+
+    return "".join(ansi_s1), "".join(ansi_s2), "".join(html_s1), "".join(html_s2)
+
 def strip_formatting_and_normalize_ws(s: Optional[str]) -> str:
-    """Eltávolítja CDATA/HTML/Markdown jelöléseket (szöveg megtartásával), normalizálja whitespace-t."""
-    if not s:
-        return ""
+    if not s: return ""
     s = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', s, flags=re.DOTALL)
     s = html.unescape(s)
     s = MARKDOWN_HTML_TAG_RE.sub('', s)
     s = unicodedata.normalize("NFKC", s)
-    s = ' '.join(s.split())
-    return s.strip()
+    return ' '.join(s.split()).strip()
 
 def extract_visible_text(s: Optional[str]) -> str:
-    """Kiveszi a felhasználónak látható szöveget (CDATA-ból, HTML-tagek nélkül)."""
-    if not s:
-        return ""
+    if not s: return ""
     parts = re.findall(r'<!\[CDATA\[(.*?)\]\]>', s, flags=re.DOTALL)
-    if parts:
-        txt = " ".join(parts)
-    else:
-        txt = s
-    txt = re.sub(r'<[^>]+>', ' ', txt) # HTML tagek eltávolítása
+    txt = " ".join(parts) if parts else s
+    txt = re.sub(r'<[^>]+>', ' ', txt)
     txt = html.unescape(txt)
     txt = unicodedata.normalize("NFKC", txt)
-    txt = ' '.join(txt.split())
-    return txt.strip()
+    return ' '.join(txt.split()).strip()
 
 def normalize_placeholders(s: str) -> str:
-    """Placeholder-ek normalizálása tokenné a párosításhoz."""
     return PLACEHOLDER_RE.sub(PLACEHOLDER_TOKEN, s)
 
 def remove_placeholders(s: str) -> str:
-    """Eltávolítja a placeholder-eket és normalizálja a whitespace-t."""
     cleaned = PLACEHOLDER_RE.sub(" ", s or "")
     return ' '.join(cleaned.split()).strip()
 
 def extract_placeholders_list(s: str) -> List[str]:
-    """Kigyűjti a helyőrzőket egy listába, sorrendben."""
-    if not s:
-        return []
+    if not s: return []
     return [m.group(0) for m in PLACEHOLDER_RE.finditer(s)]
 
+def _normalize_end_punctuation_except_q(s: str) -> Tuple[str, bool]:
+    if not s: return "", False
+    s_clean = strip_formatting_and_normalize_ws(s)
+    if not s_clean: return "", False
+    ends_with_q = s_clean.endswith('?')
+    if ends_with_q:
+        s_base = s_clean[:-1].rstrip()
+    else:
+        s_base = re.sub(r'[.\!…\s]+$', '', s_clean)
+    return s_base, ends_with_q
+
 def canonicalize_msgid(original_msgid: str) -> Tuple[str, str]:
-    """Kanonikus kulcs és display verzió előállítása a msgid-ből."""
-    if not original_msgid:
-        return "", ""
+    if not original_msgid: return "", ""
     stripped = strip_formatting_and_normalize_ws(original_msgid)
     display = stripped
-    canonical = normalize_placeholders(stripped).lower()
+    ph_normalized = normalize_placeholders(stripped)
+    base_text_ph_normalized, ends_with_q = _normalize_end_punctuation_except_q(ph_normalized)
+    canonical = base_text_ph_normalized.lower()
+    if ends_with_q: canonical += "{Q}"
     canonical = ' '.join(canonical.split())
     return canonical, display
 
 def get_word_count_from_display(display: str) -> int:
-    """Megszámolja a 'valódi' szavakat a display stringben (helyőrzők nélkül)."""
-    if not display:
-        return 0
-    # A 'display' már 'strip_formatting_and_normalize_ws'-n átesett a canonicalize_msgid-ben
-    # Helyőrzők eltávolítása a szószámításhoz
+    if not display: return 0
     cleaned_no_ph = PLACEHOLDER_RE.sub(" ", display)
     words = WORD_RE.findall(cleaned_no_ph)
     return len([w for w in words if w])
 
+def _placeholder_stripped_equal(s1: str, s2: str) -> bool:
+    ph_list1 = extract_placeholders_list(s1)
+    ph_list2 = extract_placeholders_list(s2)
+    if len(ph_list1) != len(ph_list2): return False
+    s1_base, s1_end = _normalize_end_punctuation_except_q(remove_placeholders(s1))
+    s2_base, s2_end = _normalize_end_punctuation_except_q(remove_placeholders(s2))
+    if s1_end != s2_end: return False
+    return s1_base.lower() == s2_base.lower()
+
 def get_word_set(translation: Optional[str]) -> Set[str]:
-    """Kinyeri a szavak halmazát egy fordításból (helyőrzők nélkül, kisbetűsítve)."""
-    if not translation:
-        return set()
+    if not translation: return set()
     cleaned = strip_formatting_and_normalize_ws(translation)
     cleaned_no_ph = remove_placeholders(cleaned)
-    words = WORD_RE.findall(cleaned_no_ph.lower())
-    return {w for w in words if w}
+    words = WORD_RE.findall(cleaned_no_ph)
+    return {word.lower() for word in words if word}
+
+def check_divergence(msgstr1: str, msgstr2: str, debug: bool = False) -> Tuple[bool, float]:
+    if _placeholder_stripped_equal(msgstr1, msgstr2): return False, 1.0
+    words1 = get_word_set(msgstr1)
+    words2 = get_word_set(msgstr2)
+    if not words1 and not words2: return False, 1.0
+    intersection = words1.intersection(words2)
+    union = words1.union(words2)
+    jaccard = len(intersection) / len(union) if union else 0.0
+    return jaccard < SIMILARITY_THRESHOLD, jaccard
 
 def adapt_placeholders_using_msgids(source_msgstr: str, source_msgid: str, target_msgid: str) -> str:
-    """
-    Megpróbálja adaptálni a helyőrzőket a forrás fordításból (source_msgstr)
-    a cél msgid (target_msgid) helyőrzőinek felhasználásával.
-    """
-    if not source_msgstr:
-        return source_msgstr
-    if not source_msgid or not target_msgid:
-        return source_msgstr
-
-    stripped_source_id = strip_formatting_and_normalize_ws(remove_placeholders(source_msgid))
-    stripped_target_id = strip_formatting_and_normalize_ws(remove_placeholders(target_msgid))
-    
-    # Csak akkor cserélünk, ha a csupasz szövegek (PH nélkül) megegyeznek
-    if stripped_source_id != stripped_target_id:
-        return source_msgstr
-
+    if not source_msgstr or not source_msgid or not target_msgid: return source_msgstr
+    stripped_source = strip_formatting_and_normalize_ws(remove_placeholders(source_msgid))
+    stripped_target = strip_formatting_and_normalize_ws(remove_placeholders(target_msgid))
+    if stripped_source != stripped_target: return source_msgstr
     source_msgstr_ph = list(PLACEHOLDER_RE.finditer(source_msgstr))
     target_id_ph_list = extract_placeholders_list(target_msgid)
-
-    if not source_msgstr_ph or not target_id_ph_list:
-        return source_msgstr # Nincs mit cserélni
-
-    if len(source_msgstr_ph) != len(target_id_ph_list):
-        return source_msgstr # A helyőrzők száma nem egyezik
-
-    # Helyőrzők cseréje sorrendben
-    out: List[str] = []
+    if not source_msgstr_ph or not target_id_ph_list: return source_msgstr
+    if len(source_msgstr_ph) != len(target_id_ph_list): return source_msgstr
+    out = []
     last = 0
     for idx, m in enumerate(source_msgstr_ph):
         out.append(source_msgstr[last:m.start()])
@@ -219,21 +557,14 @@ def adapt_placeholders_using_msgids(source_msgstr: str, source_msgid: str, targe
     return ''.join(out)
 
 def po_escape(s: str) -> str:
-    """Escape-eli a stringet a PO formátumnak megfelelően."""
-    if s is None:
-        s = ""
-    s = s.replace('\\', '\\\\')
-    s = s.replace('"', '\\"')
-    s = s.replace('\r\n', '\n').replace('\r', '\n')
-    s = s.replace('\n', '\\n')
-    s = s.replace('\t', '\\t')
+    if s is None: s = ""
+    s = s.replace('\\', '\\\\').replace('"', '\\"').replace('\r\n', '\n').replace('\r', '\n')
+    s = s.replace('\n', '\\n').replace('\t', '\\t')
     return f'"{s}"'
 
-
-# --- .po beolvasás (Read-only, 'compare'-hoz és 'lint'-hez) ---
+# --- PO Olvasás / Írás ---
 
 def _parse_po_string(line: str) -> str:
-    """Segéd: '\"...\"' sor tartalmának megbízható kicsomagolása (escape-k kezelése)."""
     line = line.strip()
     if len(line) >= 2 and line.startswith('"') and line.endswith('"'):
         content = line[1:-1]
@@ -244,966 +575,1123 @@ def _parse_po_string(line: str) -> str:
     return ""
 
 def load_po_simple(path: str) -> Dict[str, str]:
-    """Egyszerű .po parser: msgid -> msgstr, plurál msgstr[0] fallback."""
     entries: Dict[str, str] = {}
-    current_msgid: List[str] = []
-    current_msgstr: List[str] = []
-    current_msgstr_plural_0: List[str] = []
+    current_msgid = []
+    current_msgstr = []
+    current_msgstr_0 = []
     state = None
+    
     def process_entry():
-        nonlocal current_msgid, current_msgstr, current_msgstr_plural_0, state
+        nonlocal current_msgid, current_msgstr, current_msgstr_0, state
         if current_msgid:
-            full_msgid = "".join(_parse_po_string(l) for l in current_msgid)
-            full_msgstr = "".join(_parse_po_string(l) for l in current_msgstr)
-            full_msgstr0 = "".join(_parse_po_string(l) for l in current_msgstr_plural_0)
-            final_msgstr = full_msgstr if full_msgstr else full_msgstr0
-            if full_msgid:
-                entries[full_msgid] = final_msgstr or ""
-        current_msgid = []
-        current_msgstr = []
-        current_msgstr_plural_0 = []
-        state = None
+            fid = "".join(_parse_po_string(l) for l in current_msgid)
+            fstr = "".join(_parse_po_string(l) for l in current_msgstr)
+            fstr0 = "".join(_parse_po_string(l) for l in current_msgstr_0)
+            final_str = fstr if fstr else fstr0
+            if fid: entries[fid] = final_str or ""
+        current_msgid = []; current_msgstr = []; current_msgstr_0 = []; state = None
 
     try:
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 ls = line.strip()
-                if not ls or ls.startswith('#'):
-                    continue
+                if not ls or ls.startswith('#'): continue
                 if ls.startswith("msgid "):
-                    process_entry()
-                    state = 'msgid'
-                    current_msgid.append(ls[len("msgid "):])
+                    process_entry(); state = 'msgid'; current_msgid.append(ls[len("msgid "):])
                 elif ls.startswith("msgstr[0]"):
-                    state = 'msgstr0'
-                    current_msgstr_plural_0.append(ls[len("msgstr[0] "):])
+                    state = 'msgstr0'; current_msgstr_0.append(ls[len("msgstr[0] "):])
                 elif ls.startswith("msgstr "):
-                    state = 'msgstr'
-                    current_msgstr.append(ls[len("msgstr "):])
+                    state = 'msgstr'; current_msgstr.append(ls[len("msgstr "):])
                 elif ls.startswith("msgstr["):
                     state = None
                 elif ls.startswith('"') and ls.endswith('"'):
-                    if state == 'msgid':
-                        current_msgid.append(ls)
-                    elif state == 'msgstr':
-                        current_msgstr.append(ls)
-                    elif state == 'msgstr0':
-                        current_msgstr_plural_0.append(ls)
+                    if state == 'msgid': current_msgid.append(ls)
+                    elif state == 'msgstr': current_msgstr.append(ls)
+                    elif state == 'msgstr0': current_msgstr_0.append(ls)
                 else:
-                    process_entry()
-                    state = None
+                    process_entry(); state = None
         process_entry()
-    except FileNotFoundError:
-        print(f"{RED}Hiba: a fájl nem található: {path}{RESET}", file=sys.stderr)
-        return {}
-    except Exception as e:
-        print(f"{RED}Hiba a fájl olvasása közben ({path}): {e}{RESET}", file=sys.stderr)
+    except Exception:
         return {}
     return entries
 
 def load_po(path: str) -> Dict[str, str]:
-    """Polib-ot használjuk, ha elérhető; különben a simple parser-t."""
-    polib_mod = None
-    try:
-        import polib as polib_mod
-    except ImportError:
-        polib_mod = None
-    
-    if polib_mod:
+    if polib:
         try:
-            po = polib_mod.pofile(path, encoding='utf-8')
-            entries: Dict[str, str] = {}
+            po = polib.pofile(path, encoding='utf-8')
+            entries = {}
             for e in po:
-                if not e.msgid or getattr(e, "obsolete", False):
-                    continue
-                translation = e.msgstr or ""
-                if not translation and getattr(e, "msgstr_plural", None):
-                    try:
-                        # Polib dict-ként kezeli a többes számot
-                        if isinstance(e.msgstr_plural, dict) and '0' in e.msgstr_plural:
-                            translation = e.msgstr_plural.get('0', '')
-                        # Néha listaként is előfordulhat (régebbi verziók?)
-                        elif isinstance(e.msgstr_plural, (list, tuple)) and len(e.msgstr_plural) > 0:
-                            translation = e.msgstr_plural[0]
-                    except Exception:
-                        pass
-                entries[e.msgid] = translation or ""
+                if not e.msgid or getattr(e, "obsolete", False): continue
+                tr = e.msgstr or ""
+                if not tr and getattr(e, "msgstr_plural", None):
+                    if isinstance(e.msgstr_plural, dict) and '0' in e.msgstr_plural: tr = e.msgstr_plural['0']
+                    elif isinstance(e.msgstr_plural, (list,tuple)) and len(e.msgstr_plural)>0: tr = e.msgstr_plural[0]
+                entries[e.msgid] = tr or ""
             return entries
         except Exception:
-            return load_po_simple(path) # Visszaesés simple parser-re
-    else:
-        return load_po_simple(path)
+            return load_po_simple(path)
+    return load_po_simple(path)
 
 def build_canonical_map(entries: Dict[str, str]) -> Dict[str, Tuple[str, str, str]]:
-    """Kanonikus térkép építése: key -> (orig_id, orig_str, display_id)"""
-    d: Dict[str, Tuple[str, str, str]] = {}
+    d = {}
     for orig_id, orig_str in entries.items():
-        if not orig_id:
-            continue
+        if not orig_id: continue
         key, disp = canonicalize_msgid(orig_id)
-        if not key:
-            continue
-        d[key] = (orig_id, orig_str or "", disp)
+        if key: d[key] = (orig_id, orig_str or "", disp)
     return d
 
 def build_translation_map_for_fill(path: str) -> Dict[str, Tuple[str, str]]:
-    """
-    Kanonikus térkép építése a '-fill' parancsokhoz (a fillios.py logikája alapján).
-    Visszatér: kanonikus_kulcs -> (eredeti_msgid, msgstr)
-    """
-    entries = load_po(path) 
-    result: Dict[str, Tuple[str, str]] = {}
+    entries = load_po(path)
+    result = {}
     for msgid, msgstr in entries.items():
         key, _ = canonicalize_msgid(msgid)
-        if key: # Csak ha van érvényes kulcs
-            result[key] = (msgid, msgstr or "")
+        if key: result[key] = (msgid, msgstr or "")
     return result
 
-
-# --- .po feldolgozás (Block-alapú, íráshoz) ---
-
 def split_file_into_entries(lines: List[str]) -> Tuple[List[str], List[List[str]]]:
-    """Szétvágja a fájlt preambulumra és bejegyzés-blokkokra."""
-    msgid_indices = []
-    for idx, ln in enumerate(lines):
-        if ln.lstrip().startswith("msgid "):
-            msgid_indices.append(idx)
-
-    if not msgid_indices:
-        # Ha nincs msgid, az egész fájl egy blokk (csak a fejléc?)
-        return (lines, [])
-
+    msgid_indices = [idx for idx, ln in enumerate(lines) if ln.lstrip().startswith("msgid ")]
+    if not msgid_indices: return (lines, [])
     preamble = lines[:msgid_indices[0]]
-    blocks: List[List[str]] = []
-    
-    for i, start_idx in enumerate(msgid_indices):
-        end_idx = msgid_indices[i + 1] if i + 1 < len(msgid_indices) else len(lines)
-        blocks.append(lines[start_idx:end_idx])
-
+    blocks = []
+    for i, start in enumerate(msgid_indices):
+        end = msgid_indices[i+1] if i+1 < len(msgid_indices) else len(lines)
+        blocks.append(lines[start:end])
     return preamble, blocks
 
-def parse_entry_block(block_lines: List[str]) -> Tuple[str, str, Dict[int, str]]:
-    """Kinyeri a msgid-t, msgstr-t és a többes számú alakokat egy blokkból."""
-    msgid_parts: List[str] = []
-    msgstr_parts: List[str] = []
-    plurals: Dict[int, List[str]] = {}
+def parse_entry_block(block: List[str]) -> Tuple[str, str, Dict[int, str]]:
+    msgid, msgstr = [], []
+    plurals = {}
     state = None
-    current_plural_index = -1
-
-    for ln in block_lines:
+    curr_plural = -1
+    for ln in block:
         s = ln.strip()
-        if not s or s.startswith("#"): # Kommentek átugrása
-            continue
-
-        if s.startswith("msgid "):
-            state = "msgid"
-            msgid_parts.append(s[len("msgid "):])
+        if not s or s.startswith("#"): continue
+        if s.startswith("msgid "): state="msgid"; msgid.append(s[len("msgid "):])
         elif s.startswith("msgstr["):
-            state = "msgstrplural"
-            m = re.match(r'msgstr\[(\d+)\]\s*(.*)', s)
-            if m:
-                current_plural_index = int(m.group(1))
-                rest = m.group(2) or ''
-                plurals.setdefault(current_plural_index, []).append(rest)
-            else:
-                 current_plural_index = -1
-        elif s.startswith("msgstr "):
-            state = "msgstr"
-            msgstr_parts.append(s[len("msgstr "):])
-        elif s.startswith('"') and s.endswith('"'): # Folytató sor
-            if state == "msgid":
-                msgid_parts.append(s)
-            elif state == "msgstr":
-                msgstr_parts.append(s)
-            elif state == "msgstrplural" and current_plural_index != -1:
-                plurals[current_plural_index].append(s)
-        else:
-             state = None
-             current_plural_index = -1
+            state="msgstrplural"; m=re.match(r'msgstr\[(\d+)\]\s*(.*)',s)
+            if m: curr_plural=int(m.group(1)); plurals.setdefault(curr_plural,[]).append(m.group(2) or '')
+            else: curr_plural=-1
+        elif s.startswith("msgstr "): state="msgstr"; msgstr.append(s[len("msgstr "):])
+        elif s.startswith('"') and s.endswith('"'):
+            if state=="msgid": msgid.append(s)
+            elif state=="msgstr": msgstr.append(s)
+            elif state=="msgstrplural" and curr_plural!=-1: plurals[curr_plural].append(s)
+        else: state=None; curr_plural=-1
+    
+    full_id = "".join(_parse_po_string(l) for l in msgid) if msgid else ""
+    full_str = "".join(_parse_po_string(l) for l in msgstr) if msgstr else ""
+    full_plurals = {k: "".join(_parse_po_string(l) for l in p) for k,p in plurals.items()}
+    return full_id, full_str, full_plurals
 
-    full_msgid = "".join(_parse_po_string(l) for l in msgid_parts) if msgid_parts else ""
-    full_msgstr = "".join(_parse_po_string(l) for l in msgstr_parts) if msgstr_parts else ""
-    full_plurals: Dict[int, str] = {}
-    for k, parts in plurals.items():
-        full_plurals[k] = "".join(_parse_po_string(l) for l in parts)
-
-    return full_msgid, full_msgstr, full_plurals
-
-def replace_msgstr_in_block(block_lines: List[str], new_msgstr: Optional[str], plural_index: Optional[int] = None) -> List[str]:
-    """Kicseréli a msgstr (vagy msgstr[index]) tartalmát egy blokkon belül."""
-    out: List[str] = []
+def replace_msgstr_in_block(block: List[str], new_msgstr: Optional[str], plural_index: Optional[int]=None) -> List[str]:
+    out = []
     i = 0
     replaced = False
-    target_line_start = f"msgstr[{plural_index}] " if plural_index is not None else "msgstr "
-
-    while i < len(block_lines):
-        ln = block_lines[i]
+    target = f"msgstr[{plural_index}] " if plural_index is not None else "msgstr "
+    while i < len(block):
+        ln = block[i]
         s = ln.lstrip()
-
-        if s.startswith(target_line_start):
-            esc_str = po_escape(new_msgstr or "")
-            indent = ln[:len(ln) - len(s)]
-            out.append(indent + target_line_start + esc_str + "\n")
-            replaced = True
-            # Átugorjuk az eredeti msgstr folytató sorait
-            i += 1
-            while i < len(block_lines) and block_lines[i].lstrip().startswith('"'):
-                i += 1
+        if s.startswith(target):
+            out.append(ln[:len(ln)-len(s)] + target + po_escape(new_msgstr or "") + "\n")
+            replaced = True; i += 1
+            while i < len(block) and block[i].lstrip().startswith('"'): i += 1
             continue
-
-        out.append(ln)
-        i += 1
-
-    # Ha nem találtunk létező msgstr sort (pl. csak msgid volt), akkor hozzáadjuk
+        out.append(ln); i += 1
+    
     if not replaced:
-        inserted = False
-        res: List[str] = []
-        i = 0
+        # Beszúrás
+        esc = po_escape(new_msgstr or "")
+        line_to_add = f"{target}{esc}\n"
+        res = []
+        i = 0; inserted = False
         while i < len(out):
             res.append(out[i])
-            ln = out[i]
-            s = ln.lstrip()
-            # Az utolsó msgid sor vagy annak folytatása után szúrjuk be
-            if s.startswith("msgid ") or (s.startswith('"') and i > 0 and (out[i-1].lstrip().startswith("msgid ") or out[i-1].lstrip().startswith('"'))):
+            ln = out[i]; s = ln.lstrip()
+            if s.startswith("msgid ") or (s.startswith('"') and i>0 and (out[i-1].lstrip().startswith("msgid ") or out[i-1].lstrip().startswith('"'))):
                  j = i + 1
-                 while j < len(out) and out[j].lstrip().startswith('"'):
-                     res.append(out[j])
-                     j += 1
-
-                 esc_str = po_escape(new_msgstr or "")
-                 indent = ln[:len(ln) - len(s)]
-                 res.append(indent + target_line_start + esc_str + "\n")
-                 inserted = True
-                 i = j
-                 continue
-            i += 1
-
-        if not inserted:
-            esc_str = po_escape(new_msgstr or "")
-            out.append(target_line_start + esc_str + "\n")
-        else:
-             out = res
-
+                 while j < len(out) and out[j].lstrip().startswith('"'): res.append(out[j]); j+=1
+                 res.append(line_to_add); inserted = True; i = j; continue
+            i+=1
+        if not inserted: out.append(line_to_add)
+        else: out = res
     return out
 
-def ensure_fuzzy_flag(block_lines: List[str]) -> List[str]:
-    """Biztosítja, hogy a blokk rendelkezzen '#, fuzzy' flag-gel."""
+def ensure_fuzzy_flag(block: List[str]) -> List[str]:
     fuzzy_found = False
-    flags_line_index = -1
-    first_non_comment_index = 0
-
-    for i, ln in enumerate(block_lines):
+    flags_idx = -1
+    first_code = 0
+    for i, ln in enumerate(block):
         ls = ln.lstrip()
-        if not ls.startswith("#"):
-            first_non_comment_index = i
-            break
+        if not ls.startswith("#"): first_code=i; break
         if ls.startswith("#,"):
-            flags_line_index = i
-            if "fuzzy" in ls.split(','):
-                fuzzy_found = True
-                break
-    else:
-        first_non_comment_index = len(block_lines)
-
-    if fuzzy_found:
-        return block_lines
-
-    if flags_line_index != -1:
-        ln = block_lines[flags_line_index]
-        ls = ln.lstrip()
-        indent = ln[:len(ln) - len(ls)]
-        existing_flags = ls[2:].strip()
-        if existing_flags:
-            new_line = f"{indent}#, fuzzy, {existing_flags}\n"
-        else:
-            new_line = f"{indent}#, fuzzy\n"
-        block_lines[flags_line_index] = new_line
-        return block_lines
-    else:
-        indent = ""
-        if block_lines:
-            ln0 = block_lines[0]
-            indent = ln0[:len(ln0) - len(ln0.lstrip())]
-        
-        insert_index = flags_line_index if flags_line_index != -1 else 0
-        if flags_line_index == -1 and first_non_comment_index > 0:
-            insert_index = first_non_comment_index
-        elif flags_line_index == -1 and first_non_comment_index == 0:
-            insert_index = 0 # Beszúrás a legelejére
-
-        block_lines.insert(insert_index, f"{indent}#, fuzzy\n")
-        return block_lines
-
-def write_po_file(path: str, preamble: List[str], blocks: List[List[str]], original_lines: List[str]):
-    """Kiírja a módosított .po fájlt."""
-    out_lines: List[str] = []
-    out_lines.extend(preamble)
-    for b in blocks:
-        out_lines.extend(b)
+            flags_idx = i
+            if "fuzzy" in ls.split(','): fuzzy_found=True; break
+    else: first_code = len(block)
     
+    if fuzzy_found: return block
+    if flags_idx != -1:
+        ln = block[flags_idx]; ls = ln.lstrip()
+        indent = ln[:len(ln)-len(ls)]
+        exist = ls[2:].strip()
+        block[flags_idx] = f"{indent}#, fuzzy, {exist}\n" if exist else f"{indent}#, fuzzy\n"
+    else:
+        # Beszúrás az elejére, de a kommentek közé ha van
+        indent = ""
+        if block: indent = block[0][:len(block[0])-len(block[0].lstrip())]
+        insert_idx = 0
+        if first_code > 0 and block[0].startswith("#"): pass # Kommentek után? Inkább elé
+        block.insert(insert_idx, f"{indent}#, fuzzy\n")
+    return block
+
+def write_po_file(path: str, preamble: List[str], blocks: List[List[str]], orig_lines: List[str]):
+    out = []
+    out.extend(preamble)
+    for b in blocks: out.extend(b)
+    if orig_lines and orig_lines[-1].strip() == "" and (not out or out[-1].strip() != ""):
+        out.append("\n")
     try:
-        # Biztosítjuk, hogy a fájl vége üres sor legyen, ha az eredetiben is az volt
-        if original_lines and original_lines[-1].strip() == "":
-             if not out_lines or out_lines[-1].strip() != "":
-                  out_lines.append("\n")
-
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            f.writelines(out_lines)
+        with open(path, "w", encoding="utf-8", newline="\n") as f: f.writelines(out)
+        return True
     except Exception as e:
-        print(f"{RED}Hiba az íráskor ({path}): {e}{RESET}", file=sys.stderr)
-        return False
-    return True
+        print(f"{RED}Hiba íráskor: {e}{RESET}"); return False
 
-
-# --- Issue detektálások (Linting / Formatcheck) ---
-
-def check_cdata_balance(s: str) -> Optional[str]:
-    if not s: return None
-    if s.count('<![CDATA[') != s.count(']]>'):
-        return "CDATA nincs megfelelően lezárva (<![CDATA[ vs ]]> szám nem egyezik)."
-    return None
-
-def check_markdown_balance(s: str) -> Optional[str]:
-    if not s: return None
-    if re.search(r'<[^>]+>', s) or '<![CDATA[' in s:
-        return None # HTML/CDATA esetén kihagyjuk
-    visible = extract_visible_text(s)
-    if not visible: return None
+# --- Issue Checks ---
+def check_cdata_balance(s): return "CDATA hiba" if s and s.count('<![CDATA[')!=s.count(']]>') else None
+def check_markdown_balance(s):
+    if not s or '<![CDATA[' in s or re.search(r'<[^>]+>', s): return None
+    v = extract_visible_text(s)
     for m in ['`', '**', '__', '~~']:
-        if visible.count(m) % 2 != 0:
-            return f"Hibás Markdown/Code jelölő: '{m}' páratlan darabszámban."
-    if visible.count('*') % 2 != 0:
-        return "Hibás Markdown: '*' karakterek páratlan számban."
+        if v.count(m)%2!=0: return f"Markdown hiba: {m}"
+    if v.count('*')%2!=0: return "Markdown hiba: *"
     return None
-
-def check_html_tag_balance(s: str) -> Optional[str]:
-    if not s: return None
-    if '<![CDATA[' in s:
-        return None # CDATA esetén kihagyjuk
+def check_html_tag_balance(s):
+    if not s or '<![CDATA[' in s: return None
     tags = re.findall(r'<\s*(/)?\s*([a-zA-Z][a-zA-Z0-9:-]*)[^>]*>', s)
-    if not tags: return None
-    counts = {}
-    for closing, name in tags:
-        if name.lower() in ["br", "img", "hr", "input", "meta", "link"]:
-            continue
-        counts.setdefault(name.lower(), 0)
-        counts[name.lower()] += -1 if closing else 1
-    unbalanced = [name for name, cnt in counts.items() if cnt != 0]
-    if unbalanced:
-        return f"HTML tagek egyensúlyhiánya: {', '.join(unbalanced)}"
-    return None
-
-def check_ellipsis_usage(s: str) -> Optional[str]:
+    cnt = {}
+    for cl, n in tags:
+        if n.lower() in ["br","img","hr","input","meta","link"]: continue
+        cnt.setdefault(n.lower(),0); cnt[n.lower()] += -1 if cl else 1
+    err = [n for n,c in cnt.items() if c!=0]
+    return f"HTML tag hiba: {', '.join(err)}" if err else None
+def check_ellipsis_usage(s): return "ASCII ellipszis (...)" if s and '...' in extract_visible_text(s) and '…' not in s else None
+def check_quotes_usage(s):
     if not s: return None
-    if '…' in s: return None # Már helyes
-    visible = extract_visible_text(s)
-    if '…' in visible: return None # Már helyes
-    if '...' in visible or '...' in s:
-        return "ASCII ellipszis ('...') található; javasolt az '…' karakter."
-    return None
-
-def check_quotes_usage(s: str) -> Optional[str]:
-    if not s: return None
-    visible = extract_visible_text(s)
-    straight_double = '"' in visible
-    straight_single = "'" in visible
-    typographic_double = '„' in visible or '”' in visible or '“' in visible
-    typographic_single = '‚' in visible or '’' in visible or '‘' in visible
-    if (straight_double or straight_single) and not (typographic_double or typographic_single):
-        return "Egyenes idézőjelek (' vagy \") találhatók; javasolt a tipográfiai („”)."
-    return None
-
-def check_tegezodes_usage(s: str) -> Optional[str]:
-    """Ellenőrzi, hogy a szöveg tartalmaz-e a TEGEZODES_WORDS bármelyik szavát."""
-    if not s: return None
-    visible = extract_visible_text(s).lower()
-    if not visible: return None
-    tokens = set(WORD_RE.findall(visible))
-    found = tokens & {w.lower() for w in TEGEZODES_WORDS}
-    if found:
-        return f"Tegező/utasító szavak: {', '.join(sorted(found))}"
+    v = extract_visible_text(s)
+    if ('"' in v or "'" in v) and not ('„' in v or '”' in v): return "Egyenes idézőjel"
     return None
 
 def collect_issues_for_entry(msgid: str, msgstr: str, checks: Set[str]) -> List[str]:
-    """Végrehajtja a kért vizsgálatokat egy bejegyzésre."""
-    issues: List[str] = []
-    
-    for label, text in (("msgid", msgid), ("msgstr", msgstr)):
-        if not text: continue
-        
+    issues = []
+    for lbl, txt in (("msgid", msgid), ("msgstr", msgstr)):
+        if not txt: continue
         if 'format' in checks:
-            c = check_cdata_balance(text)
-            if c: issues.append(f"{label}: {c}")
-            m = check_markdown_balance(text)
-            if m: issues.append(f"{label}: {m}")
-            h = check_html_tag_balance(text)
-            if h: issues.append(f"{label}: {h}")
-
-        if label == "msgstr":
+            for f in [check_cdata_balance, check_markdown_balance, check_html_tag_balance]:
+                r = f(txt)
+                if r: issues.append(f"{lbl}: {r}")
+        if lbl == "msgstr":
             if 'irasjel' in checks:
-                e = check_ellipsis_usage(text)
-                if e: issues.append(f"{label}: {e}")
-                q = check_quotes_usage(text)
-                if q: issues.append(f"{label}: {q}")
-            
-            if 'tegezodes' in checks:
-                t = check_tegezodes_usage(text)
-                if t: issues.append(f"{label}: {t}")
+                for f in [check_ellipsis_usage, check_quotes_usage]:
+                    r = f(txt)
+                    if r: issues.append(f"{lbl}: {r}")
+            # Tegeződés itt már NINCS, mert külön Spacy-s logika van
     return issues
 
 
-# --- Súgó ---
+# =============================================================================
+# FUNKCIÓK (Extract, Lint, Tegeződés, Compare, Fill, Merge)
+# =============================================================================
 
-def print_help():
-    print(f"""
-{BOLD}PO Tool v1.2 - Használat{RESET}
-{CYAN}-h{RESET}              {BOLD}Megjeleníti ezt a súgót{RESET}
+def run_extract_translations(input_pattern: str):
+    """Az extractpo.py funkciója: fordítások kinyerése txt fájlba."""
+    if not polib:
+        print(f"{RED}Hiba: 'polib' nincs telepítve. (pip install polib){RESET}")
+        return 1
+        
+    files = glob.glob(input_pattern)
+    if not files:
+        print(f"{YELLOW}Nem található fájl a mintára: {input_pattern}{RESET}")
+        return 1
 
-{YELLOW}Egy fájl csatolásakor:{RESET}
-  {sys.argv[0]} <fájl.po> [kapcsoló]
+    success = 0
+    for input_file in files:
+        if not os.path.isfile(input_file): continue
+        try:
+            po = polib.pofile(input_file)
+            base_name = os.path.splitext(os.path.basename(input_file))[0]
+            output_file = f"Extracted_{base_name}.txt"
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                for idx, entry in enumerate(po):
+                    if entry.msgid and entry.msgstr and entry.msgid.strip():
+                        f.write(f"msgid({idx+1}) = {entry.msgid}\n")
+                        f.write(f"msgstr({idx+1}) = {entry.msgstr}\n")
+            
+            print(f"{GREEN}Kinyerve: {output_file}{RESET}")
+            success += 1
+        except Exception as e:
+            print(f"{RED}Hiba ({input_file}): {e}{RESET}")
+    
+    print(f"Kész. {success}/{len(files)} fájl feldolgozva.")
+    return 0
 
-  {CYAN}-formatcheck{RESET}   A CDATA, Markdown, HTML tag (pl. href) egyensúlyának ellenőrzése.
-  {CYAN}-irasjelek{RESET}     Javítja az idézőjeleket ({BOLD}'', "" -> „”{RESET}), ellipszist ({BOLD}... -> …{RESET}),
-                  és kötőjeleket ({BOLD}–, — -> -{RESET}). Új fájlt hoz létre:
-                  {MAGENTA}javitott_irasjelek_<fájlnév>.po{RESET} (minden javítás {BOLD}fuzzy{RESET}-ként jelölve)
-  {CYAN}-spellcheck{RESET}    Helyesírás-ellenőrzés (Hunspell 'hu_HU' szótárral).
-  {CYAN}-tegezodes{RESET}     A tegező/utasító szavak keresése a fordításokban.
-                  (A szótár: {BOLD}TEGEZODES_WORDS{RESET} a szkript elején szerkeszthető.)
+def run_tegezodes_spacy(path: str):
+    """A tegezodes.py funkciója: Spacy alapú elemzés és HTML riport."""
+    checker = TegezoChecker() # Ez betölti a Spacy-t
+    result_data = checker.process_po_file(path)
+    
+    if not result_data:
+        return 1
+        
+    data = result_data['results']
+    stats = result_data['stats']
+    filename = stats['filename']
 
-{YELLOW}Két fájl hozzáadásakor:{RESET}
-  {sys.argv[0]} <forrás.po> <cél.po> [kapcsoló]
+    # Konzol kimenet
+    if not data:
+        print(f"{GREEN}🎉 Nem található tegező szó!{RESET}")
+    else:
+        print(f"\n{'='*60}")
+        print(f"TEGEZŐ SZAVAK ({len(data)} találat)")
+        print(f"{'='*60}\n")
+        for i, entry in enumerate(data, 1):
+            print(f"{'-'*60}")
+            print(f"msgid: {entry['msgid'][:80]}{'...' if len(entry['msgid']) > 80 else ''}")
+            print(f"msgstr: {entry['msgstr']}")
+            if entry['tegezo_words']:
+                highlighted = entry['msgstr']
+                for w in set(entry['tegezo_words']):
+                    highlighted = re.sub(r'\b'+re.escape(w)+r'\b', colored(w, RED), highlighted)
+                print(f"tegező: {highlighted}")
+            print(f"{'-'*60}\n")
 
-  {CYAN}-compare{RESET}        Összehasonlítja a két .po fájl fordításait (szóhalmaz-alapú összehasonlítás
-                  normalizált, lecsupaszított szövegeken).
-  {CYAN}-fillios{RESET}        Kitölti a {BOLD}<cél.po>{RESET} (pl. iOS) üres fordításait a {BOLD}<forrás.po>{RESET} (pl. Android)
-                  fordításaival, ha a kanonikus msgid szövegek tökéletesen megegyeznek.
-                  {BOLD}Figyelem:{RESET} Alapértelmezetten kihagyja az egyszavas/csak-helyőrzős stringeket.
-                  Új fájl: {MAGENTA}fillios_<célfájlnév>.po{RESET}
-  {CYAN}-filland{RESET}        Kitölti a {BOLD}<cél.po>{RESET} (pl. Android) üres fordításait a {BOLD}<forrás.po>{RESET} (pl. iOS)
-                  fordításaival, ha a kanonikus msgid szövegek tökéletesen megegyeznek.
-                  {BOLD}Figyelem:{RESET} Alapértelmezetten kihagyja az egyszavas/csak-helyőrzős stringeket.
-                  Új fájl: {MAGENTA}filland_<célfájlnév>.po{RESET}
-  {CYAN}-egyszavas{RESET}      A {CYAN}-filland{RESET} vagy {CYAN}-fillios{RESET} kapcsolóval együtt használva
-                  átviszi az egyszavas és csak-helyőrzőket is (pl.: "remove" vagy "%s").
-                  Az új fájl neve ekkor: {MAGENTA}fillx_egyszavas_<célfájlnév>.po{RESET}
-""")
+    # HTML generálás
+    if data:
+        html_entries = []
+        for i, entry in enumerate(data, 1):
+            rows = f"""
+            <div class="entry">
+                <div class="entry-header">#{i} Msgid: {html.escape(entry['msgid'])}</div>
+                <div class="entry-body">
+                    <div class="msgstr">{entry['highlighted_msgstr']}</div>
+            """
+            if entry['highlighted_plural']:
+                 rows += '<div style="margin-top:5px"><b>Plurál:</b></div>'
+                 for k, t in entry['highlighted_plural'].items():
+                     rows += f'<div class="msgstr">[{k}]: {t}</div>'
+            
+            unique_words = sorted(set(entry['tegezo_words']))
+            rows += f"""
+                    <div class="highlight">
+                        <strong>Tegező szavak:</strong> {', '.join(unique_words)}
+                    </div>
+                </div>
+            </div>
+            """
+            html_entries.append(rows)
 
-
-# --- Fő funkciók (Kapcsolók) ---
+        stats_html = f"""
+        <div class="stats">
+            <strong>Fájl:</strong> {filename}<br>
+            <strong>Összes bejegyzés:</strong> {stats['total_entries']}<br>
+            <strong>Tegező bejegyzések:</strong> {stats['tegezo_entries']}<br>
+            <strong>Talált tegező szavak:</strong> {stats['total_tegezo_words']}
+        </div>
+        <div class="warning">
+            <strong>⚠️ Figyelem:</strong> Pirossal kiemelve a tegező szavak. (Spacy NLP)
+        </div>
+        """
+        
+        ask_to_save_report(html_entries, f"tegezodes_{filename}", f"Tegeződés: {filename}", stats_html)
+    return 0
 
 def run_lint_mode(path: str, checks: Set[str], debug: bool = False):
-    """Egyfájlos ellenőrző mód (format, tegezodes, irasjel-hiba)."""
+    """Formátum-ellenőrzés (kivéve tegeződés, ami külön fut)."""
     fn = os.path.basename(path)
     entries = load_po(path)
-    if not entries:
-        # Ha a load_po már kiírta a hibaüzenetet, itt nincs teendő
-        return 1
+    if not entries: return 1
     
-    print(f"Fájl ellenőrzése: {fn} (Keresett hibák: {', '.join(checks)})")
+    print(f"Fájl ellenőrzése: {fn} (Keresés: {', '.join(checks)})")
     problems = 0
-    total_entries = len(entries)
+    html_entries = []
 
     for orig_id, orig_str in entries.items():
         issues = collect_issues_for_entry(orig_id, orig_str, checks)
         if issues:
             problems += 1
-            print("-" * 60)
-            print(f"Msgid (tiszta): {colored(strip_formatting_and_normalize_ws(orig_id), RED)}")
-            print(f"Msgstr: {colored(orig_str or '<üres>', BLUE)}")
-            print(f"{CYAN}Talált problémák:{RESET}")
+            clean_id = strip_formatting_and_normalize_ws(orig_id)
+            
+            # Konzol kimenet
+            print(f"{'-'*60}")
+            print(f"msgid: {clean_id}")
+            print(f"msgstr: {orig_str}")
             for p in issues:
-                print(f"  - {p}")
-            if debug:
-                print(f"{CYAN}Debug reprs:{RESET} msgid={repr(orig_id)}, msgstr={repr(orig_str)}")
+                print(f"probléma: {p}")
+            print(f"{'-'*60}\n")
+            
+            # HTML kimenet
+            issue_html = "".join([f'<div class="issue-item">⚠ {html.escape(p)}</div>' for p in issues])
+            html_entries.append(f"""
+            <div class="entry">
+                <div class="entry-header">#{problems} Msgid: {html.escape(clean_id)}</div>
+                <div class="entry-body">
+                    <div><b>Msgstr:</b> {html.escape(orig_str or "")}</div>
+                    <div style="margin-top:10px;">{issue_html}</div>
+                </div>
+            </div>
+            """)
 
-    print("\n" + "=" * 60)
-    print(f"{BOLD}{colored('Bejegyzések száma: ' + str(total_entries), YELLOW)}")
-    print(f"{BOLD}{colored('Problémás bejegyzések: ' + str(problems), RED)}{RESET}")
-    print("=" * 60 + "\n")
+    print(f"Problémás bejegyzések: {problems}")
+    
+    if problems > 0:
+        stats_html = f'<div class="stats"><strong>Fájl:</strong> {fn}<br><strong>Hibák száma:</strong> {problems}</div>'
+        ask_to_save_report(html_entries, f"lint_{fn}", f"Format Check: {fn}", stats_html)
     return 0
 
-def run_spellcheck(path: str, debug: bool = False):
-    """Helyesírás-ellenőrzés futtatása."""
+# --- JSON/YML/PROPERTIES fájlbetöltés spellcheck-hez ---
+def load_texts_from_file(path: str) -> Dict[str, str]:
+    """Különböző fájlformátumokból betölti a szövegeket."""
+    ext = os.path.splitext(path)[1].lower()
+    texts = {}
+    
+    try:
+        if ext == '.json':
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+            def extract_from_dict(d, prefix=""):
+                for k, v in d.items():
+                    full_key = f"{prefix}.{k}" if prefix else k
+                    if isinstance(v, dict):
+                        extract_from_dict(v, full_key)
+                    elif isinstance(v, str) and v.strip():
+                        texts[full_key] = v.strip()
+                    elif isinstance(v, list):
+                        for i, item in enumerate(v):
+                            if isinstance(item, str) and item.strip():
+                                texts[f"{full_key}[{i}]"] = item.strip()
+            
+            extract_from_dict(data)
+            
+        elif ext in ['.yml', '.yaml']:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f)
+                
+            def extract_from_yaml(data, prefix=""):
+                if isinstance(data, dict):
+                    for k, v in data.items():
+                        full_key = f"{prefix}.{k}" if prefix else k
+                        if isinstance(v, dict):
+                            extract_from_yaml(v, full_key)
+                        elif isinstance(v, str) and v.strip():
+                            texts[full_key] = v.strip()
+                        elif isinstance(v, list):
+                            for i, item in enumerate(v):
+                                if isinstance(item, str) and item.strip():
+                                    texts[f"{full_key}[{i}]"] = item.strip()
+                                elif isinstance(item, dict):
+                                    extract_from_yaml(item, f"{full_key}[{i}]")
+                elif isinstance(data, list):
+                    for i, item in enumerate(data):
+                        if isinstance(item, str) and item.strip():
+                            texts[f"{prefix}[{i}]"] = item.strip()
+                        elif isinstance(item, dict):
+                            extract_from_yaml(item, f"{prefix}[{i}]")
+            
+            extract_from_yaml(data)
+            
+        elif ext == '.properties':
+            with open(path, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if '=' in line:
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        if value:
+                            texts[key] = value
+        else:
+            print(f"{RED}Ismeretlen fájlformátum: {ext}{RESET}")
+            return {}
+            
+    except Exception as e:
+        print(f"{RED}Hiba a fájl betöltésekor ({path}): {e}{RESET}")
+        return {}
+    
+    return texts
+
+def load_spellcheck_blacklist() -> Dict[str, List[str]]:
+    """Betölti a spellcheck_blacklist.txt fájlt, ha létezik."""
+    blacklist_file = "spellcheck_blacklist.txt"
+    blacklist = {}
+    
+    if not os.path.exists(blacklist_file):
+        return blacklist
+    
+    try:
+        with open(blacklist_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        current_file = None
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Fájlnév keresése (elválasztó sor)
+            if line.startswith('----'):
+                continue
+            
+            # Fájlnév sor (amely nem tartalmaz szavakat vesszővel elválasztva)
+            if not ',' in line and '.' in line:
+                current_file = line
+                blacklist[current_file] = []
+            elif current_file and ',' in line:
+                # Szavak feldolgozása
+                words = [w.strip() for w in line.split(',')]
+                for word in words:
+                    if word and word not in blacklist[current_file]:
+                        blacklist[current_file].append(word)
+    
+    except Exception as e:
+        print(f"{YELLOW}Figyelmeztetés: Nem sikerült betölteni a blacklistet: {e}{RESET}")
+    
+    # Globális szavak összegyűjtése (minden fájlból)
+    global_words = set()
+    for words in blacklist.values():
+        global_words.update(words)
+    
+    # Átalakítás set-é a gyorsabb kereséshez
+    result = {}
+    for file_name, words in blacklist.items():
+        result[file_name] = set(words)
+    result['GLOBAL'] = global_words
+    
+    return result
+
+def save_to_spellcheck_blacklist(fn: str, misspelled_words: Set[str]):
+    """Hozzáadja a hibás szavakat a blacklist fájlhoz."""
+    blacklist_file = "spellcheck_blacklist.txt"
+    
+    # Betöltjük a meglévő blacklistet
+    existing_data = {}
+    if os.path.exists(blacklist_file):
+        try:
+            with open(blacklist_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Feldolgozzuk a meglévő tartalmat
+            sections = content.split('\n\n')
+            for section in sections:
+                lines = section.strip().split('\n')
+                if len(lines) >= 2:
+                    file_name = lines[0]
+                    if '----' in lines[1]:
+                        words_line = lines[2] if len(lines) > 2 else ''
+                    else:
+                        words_line = lines[1]
+                    
+                    if words_line:
+                        words = [w.strip() for w in words_line.split(',')]
+                        existing_words = set(words)
+                        existing_data[file_name] = existing_words
+        except Exception as e:
+            print(f"{YELLOW}Figyelmeztetés: Nem sikerült betölteni a blacklistet: {e}{RESET}")
+            existing_data = {}
+    
+    # Frissítjük az adott fájl szavait
+    if fn in existing_data:
+        existing_data[fn].update(misspelled_words)
+    else:
+        existing_data[fn] = misspelled_words
+    
+    # ABC sorrendbe rendezzük a szavakat
+    for file_name in existing_data:
+        sorted_words = sorted(existing_data[file_name], key=lambda x: x.lower())
+        existing_data[file_name] = sorted_words
+    
+    # Kiírjuk a fájlt
+    try:
+        with open(blacklist_file, 'w', encoding='utf-8') as f:
+            for file_name in sorted(existing_data.keys()):
+                words = existing_data[file_name]
+                if words:
+                    f.write(f"{file_name}\n")
+                    f.write("-" * 33 + "\n")
+                    f.write(", ".join(words) + "\n\n")
+        
+        print(f"{GREEN}Blacklist frissítve: {blacklist_file}{RESET}")
+        return True
+    except Exception as e:
+        print(f"{RED}Hiba a blacklist mentésekor: {e}{RESET}")
+        return False
+
+def filter_special_syntax(text: str) -> str:
+    """Kiszűri a speciális szintaxist a szövegből."""
+    if not text:
+        return text
+    
+    # 0. TELJES MARKUP BLOKKOK ELTÁVOLÍTÁSA (krítikus!)
+    #    pl: [accent]felfedezhetsz[] → felfedezhetsz
+    text = re.sub(
+        r'\[(?:accent|red|lightgray|green|blue|yellow|orange|purple|cyan|magenta|gray|black|white)\](.*?)\[\]',
+        r' \1 ',
+        text,
+        flags=re.DOTALL
+    )
+    
+    # 1. Ikonok/emoji szintaxis (teljesen eltávolítjuk)
+    text = ICON_EMOJI_RE.sub(' ', text)
+    
+    # 2. Színezések (most már csak a maradékokat)
+    text = COLOR_TAG_RE.sub(' ', text)
+    
+    # 3. Annotációk
+    text = ANNOTATION_RE.sub(' ', text)
+    
+    # 4. Színkódok
+    text = COLOR_CODE_RE.sub(' ', text)
+    
+    # 5. Hex kódok (uf859, ue813 stb) - ezeket is teljesen eltávolítjuk
+    text = re.sub(r'\b[uf]e?[0-9a-fA-F]{3,}\b', ' ', text)
+    
+    # 6. Egyéb speciális karakterek, amelyek hibás tokeneket okozhatnak
+    #    A / karaktert szóelválasztóvá alakítjuk
+    text = re.sub(r'/', ' ', text)
+    # Csak a \.betű mintát távolítjuk el (pl. .draw, .puffer)
+    text = re.sub(r'[\\]\.[a-zA-Z]', ' ', text)
+    
+    # 7. ÜRES ZÁRÓJELEK eltávolítása (pl. []) - biztonsági háló
+    text = re.sub(r'\[\]', ' ', text)
+    
+    return text
+
+def run_spellcheck_multiformat(path: str, debug: bool = False):
+    """Helyesírás-ellenőrzés PROPERTIES/JSON/YML/PO fájlokra, kötőjel-barát módban."""
     if not HS_OBJ:
-        print(f"{RED}Hiba: Hunspell nincs megfelelően beállítva. A '-spellcheck' nem futtatható.{RESET}", file=sys.stderr)
+        print(f"{RED}Hiba: Hunspell nincs beállítva.{RESET}")
         return 1
     
     fn = os.path.basename(path)
-    entries = load_po(path)
-    if not entries:
-        # Ha a load_po már kiírta a hibaüzenetet, itt nincs teendő
-        return 1
-
-    print(f"Helyesírás-ellenőrzés: {fn}")
-    problems = 0
-    total_entries = len(entries)
+    ext = os.path.splitext(path)[1].lower()
     
-    for orig_id, orig_str in entries.items():
-        if not orig_str:
+    if ext == '.po':
+        entries = load_po(path)
+        texts = {k: v for k, v in entries.items() if v}
+    else:
+        texts = load_texts_from_file(path)
+    
+    if not texts:
+        print(f"{YELLOW}Nem található szöveg: {path}{RESET}")
+        return 1
+    
+    blacklist = load_spellcheck_blacklist()
+    global_blacklist = blacklist.get('GLOBAL', set())
+    
+    problems = 0
+    all_misspelled_words = set()
+    html_entries = []
+    
+    # SPECIÁLIS REGEX: Megtartja a betűket és a szavakon belüli kötőjeleket is
+    # Így a "Wi-Fi-n" vagy "zip-fájl" egyetlen szó marad.
+    HUN_WORD_RE = re.compile(r'[a-zA-ZáéíóöőúüűÁÉÍÓÖŐÚÜŰ0-9]+(?:-[a-zA-ZáéíóöőúüűÁÉÍÓÖŐÚÜŰ0-9]+)*')
+
+    print(f"Helyesírás-ellenőrzés: {fn} ({len(texts)} szöveg)")
+    
+    for key, text in texts.items():
+        if not text:
             continue
+            
+        # 1. HTML unescape
+        vis = html.unescape(text)
         
-        visible_text = extract_visible_text(orig_str)
-        if not visible_text:
-            continue
+        # 2. Zavaró elemek cseréje szóközre (hogy ne tapadjanak össze a szomszédos szavak)
+        vis = vis.replace('\\n', ' ')
+        vis = re.sub(r'[\r\n]+', ' ', vis)
+        vis = re.sub(r'\[[^\]]*\]', ' ', vis) # [szín]
+        vis = re.sub(r':[a-z0-9_-]+:', ' ', vis) # :ikon:
+        
+        # 3. Speciális szintaxis szűrése (eredeti filterek, pl. printf formátumok)
+        filtered_vis = filter_special_syntax(vis)
 
-        tokens = WORD_RE.findall(visible_text)
+        # 4. Szavak kinyerése a javított regex-szel
+        tokens = HUN_WORD_RE.findall(filtered_vis)
         misspelled = []
-        for word in tokens:
-            if not HS_OBJ.spell(word):
-                # Próbáljuk meg nagybetűvel is, hátha tulajdonnév (pl. mondat eleje)
-                if not (word.istitle() and HS_OBJ.spell(word.lower())):
-                     misspelled.append(word)
+        
+        for w in tokens:
+            # Rövid kódok vagy tiszta számok átugrása
+            if len(w) < 2 or w.isdigit():
+                continue
+            if w.lower() in global_blacklist:
+                continue
+            if fn in blacklist and w.lower() in blacklist[fn]:
+                continue
+            
+            # Ellenőrzés (Hunspell)
+            if not HS_OBJ.spell(w) and not (w.istitle() and HS_OBJ.spell(w.lower())):
+                # Ha kötőjeles szó, megnézzük a részeit is (pl. Wi-Fi esetén a Wi és Fi-t)
+                # Ez segít, ha a szótár nem ismeri a kötőjeles formát, de a részeit igen.
+                if '-' in w:
+                    parts = [p for p in w.split('-') if len(p) > 1]
+                    if all(HS_OBJ.spell(p) or (p.istitle() and HS_OBJ.spell(p.lower())) for p in parts):
+                        continue
 
+                misspelled.append(w)
+                all_misspelled_words.add(w.lower())
+        
         if misspelled:
             problems += 1
-            print("-" * 60)
-            print(f"Msgid: {colored(strip_formatting_and_normalize_ws(orig_id), YELLOW)}")
+            term_text = text
+            for w in sorted(set(misspelled), key=len, reverse=True):
+                term_text = re.sub(r'\b'+re.escape(w)+r'\b', colored(w, RED), term_text)
+
+            print(f"{'-'*60}")
+            print(f"kulcs: {key}")
+            print(f"szöveg: {term_text}")
+            print(f"Helyesírási hiba: {', '.join(colored(w, RED) for w in sorted(set(misspelled)))}")
+            print(f"{'-'*60}\n")
             
-            # Hibás szavak kiemelése
-            highlighted_msgstr = orig_str
-            for word in sorted(set(misspelled), key=len, reverse=True):
-                # Óvatos csere, hogy ne sérüljön a HTML/Markdown
-                if word in visible_text:
-                     highlighted_msgstr = re.sub(r'\b' + re.escape(word) + r'\b', colored(word, RED), highlighted_msgstr)
+            # HTML kimenet
+            hl_html = html.escape(text)
+            for w in sorted(set(misspelled), key=len, reverse=True):
+                esc = html.escape(w)
+                hl_html = re.sub(r'\b'+re.escape(esc)+r'\b', f'<span class="highlight-err">{esc}</span>', hl_html)
+            
+            html_entries.append(f"""
+            <div class="entry">
+                <div class="entry-header">#{problems} Kulcs: {html.escape(key)}</div>
+                <div class="entry-body">
+                    {hl_html}
+                    <div style="color:#cf222e;font-size:12px;margin-top:5px">Hibás: {', '.join(sorted(set(misspelled)))}</div>
+                </div>
+            </div>
+            """)
 
-            print(f"Msgstr: {highlighted_msgstr}")
-            if debug:
-                 print(f"{CYAN}Debug (talált hibás szavak): {', '.join(set(misspelled))}{RESET}")
-
-    print("\n" + "=" * 60)
-    print(f"{BOLD}{colored('Bejegyzések száma: ' + str(total_entries), YELLOW)}")
-    print(f"{BOLD}{colored('Helyesírási hibás bejegyzések: ' + str(problems), RED)}{RESET}")
-    print("=" * 60 + "\n")
+    print(f"{GREEN}Kész. Hibák száma: {problems}{RESET}")
+    
+    if problems > 0:
+        print(colored("\nMit szeretne tenni?", CYAN))
+        print("1) Mentés HTML-be")
+        print("2) Mentés blacklistbe")
+        print("3) Kilépés")
+        
+        try:
+            choice = input(colored("Válasszon (1-3): ", CYAN)).strip()
+        except (EOFError, KeyboardInterrupt):
+            choice = '3'
+        
+        if choice == '1':
+            stats_html = f'<div class="stats"><strong>Fájl:</strong> {fn}<br><strong>Hibák:</strong> {problems}</div>'
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            save_html_report_unified(f"spellcheck_{fn}_{ts}.html", f"Helyesírás: {fn}", "\n".join(html_entries), stats_html)
+        elif choice == '2':
+            if all_misspelled_words:
+                save_to_spellcheck_blacklist(fn, all_misspelled_words)
+    
     return 0
 
 def run_irasjelek_fix(path: str, debug: bool = False):
-    """Írásjelek keresése és cseréje, majd új fájl írása."""
-    print(f"Írásjel-javítás futtatása: {path}")
+    print(f"Írásjel-javítás: {path}")
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+        with open(path, "r", encoding="utf-8") as f: lines = f.readlines()
     except Exception as e:
-        print(f"{RED}Hiba a fájl olvasása közben ({path}): {e}{RESET}", file=sys.stderr)
-        return 1
-
+        print(f"{RED}Hiba: {e}{RESET}"); return 1
+    
     preamble, blocks = split_file_into_entries(lines)
-    updated_blocks: List[List[str]] = []
+    updated_blocks = []
     total_fixed = 0
     
-    # Idézőjel-cserélő regexek
-    quote_double_apos_open_re = re.compile(r"(\s|^|\[)''")
-    quote_double_apos_close_re = re.compile(r"''(\s|[,.]|\]|$)")
-    quote_double_re = re.compile(r'"')
-    ellipsis_re = re.compile(r'\.\.\.(?!\.)') # Három pont, de nem négy vagy több
-    dash_re = re.compile(r'[–—]')
+    q_dbl_open = re.compile(r"(\s|^|\[)''")
+    q_dbl_close = re.compile(r"''(\s|[,.]|\]|$)")
+    ellipsis = re.compile(r'\.\.\.(?!\.)')
+    dash = re.compile(r'[–—]')
+
+    def fix_text(t):
+        if not t: return t
+        fixed = q_dbl_open.sub(r'\1„', t)
+        fixed = q_dbl_close.sub(r'”\1', fixed)
+        if fixed.count('"') > 0 and fixed.count('"') % 2 == 0:
+            s = ""; o = True
+            for c in fixed:
+                if c=='"': s += "„" if o else "”"; o = not o
+                else: s+=c
+            fixed = s
+        fixed = ellipsis.sub('…', fixed)
+        fixed = dash.sub('-', fixed)
+        return fixed
 
     for block in blocks:
-        full_msgid, full_msgstr, plurals = parse_entry_block(block)
-        if not full_msgid:
-            updated_blocks.append(block)
-            continue
-
-        modified = False
-        new_block = list(block) # Másolat
-
-        # Sima msgstr javítása
-        if full_msgstr:
-            original = full_msgstr
-            fixed = full_msgstr
-            fixed = quote_double_apos_open_re.sub(r'\1„', fixed)
-            fixed = quote_double_apos_close_re.sub(r'”\1', fixed)
-            count = fixed.count('"')
-            if count > 0 and count % 2 == 0:
-                s = ""
-                open_q = True
-                for char in fixed:
-                    if char == '"':
-                        s += "„" if open_q else "”"
-                        open_q = not open_q
-                    else:
-                        s += char
-                fixed = s
-            
-            fixed = ellipsis_re.sub('…', fixed)
-            fixed = dash_re.sub('-', fixed)
-
-            if fixed != original:
-                modified = True
-                new_block = replace_msgstr_in_block(new_block, fixed, plural_index=None)
-                if debug:
-                    print(f"Msgid: {strip_formatting_and_normalize_ws(full_msgid)[:60]}...")
-                    print(f"  Javítva (msgstr): ...{original[max(0, original.find('...'))-10 : original.find('...')+13]}... -> ...{fixed[max(0, fixed.find('…'))-10 : fixed.find('…')+13]}...")
-
-        # Plurál alakok javítása
-        for idx, p_msgstr in plurals.items():
-            if not p_msgstr: continue
-            original = p_msgstr
-            fixed = p_msgstr
-            fixed = quote_double_apos_open_re.sub(r'\1„', fixed)
-            fixed = quote_double_apos_close_re.sub(r'”\1', fixed)
-            count = fixed.count('"')
-            if count > 0 and count % 2 == 0:
-                s = ""
-                open_q = True
-                for char in fixed:
-                    if char == '"':
-                        s += "„" if open_q else "”"
-                        open_q = not open_q
-                    else:
-                        s += char
-                fixed = s
-            
-            fixed = ellipsis_re.sub('…', fixed)
-            fixed = dash_re.sub('-', fixed)
-
-            if fixed != original:
-                modified = True
-                new_block = replace_msgstr_in_block(new_block, fixed, plural_index=idx)
-                if debug:
-                    print(f"Msgid: {strip_formatting_and_normalize_ws(full_msgid)[:60]}...")
-                    print(f"  Javítva (msgstr[{idx}]): ... -> …")
-
-        if modified:
-            total_fixed += 1
-            new_block = ensure_fuzzy_flag(new_block)
+        fid, fstr, plurals = parse_entry_block(block)
+        if not fid: updated_blocks.append(block); continue
         
-        updated_blocks.append(new_block)
+        mod = False
+        new_b = list(block)
+        
+        if fstr:
+            fx = fix_text(fstr)
+            if fx != fstr:
+                mod = True; new_b = replace_msgstr_in_block(new_b, fx)
+        
+        for i, pstr in plurals.items():
+            if pstr:
+                fx = fix_text(pstr)
+                if fx != pstr:
+                    mod = True; new_b = replace_msgstr_in_block(new_b, fx, plural_index=i)
+        
+        if mod:
+            total_fixed += 1
+            new_b = ensure_fuzzy_flag(new_b)
+        updated_blocks.append(new_b)
 
     if total_fixed == 0:
-        print("Nem találtam javítandó írásjeleket.")
-        return 0
-
-    out_path = f"javitott_irasjelek_{os.path.basename(path)}"
-    if write_po_file(out_path, preamble, updated_blocks, lines):
-        print(f"\nKész: {total_fixed} bejegyzés lett javítva és fuzzy-ként megjelölve.")
-        print(f"Új fájl: {MAGENTA}{out_path}{RESET}")
-    else:
-        print(f"{RED}Hiba történt az új fájl írása közben.{RESET}")
-        return 1
+        print("Nincs javítandó."); return 0
+    
+    out = f"javitott_irasjelek_{os.path.basename(path)}"
+    if write_po_file(out, preamble, updated_blocks, lines):
+        print(f"{GREEN}Kész! Javítva: {total_fixed}. Új fájl: {out}{RESET}")
     return 0
 
 def run_compare(path1: str, path2: str, debug: bool = False):
-    """Két fájl összehasonlítása (compare_po.py logika)."""
-    fn1 = os.path.basename(path1)
-    fn2 = os.path.basename(path2)
-    entries1 = load_po(path1)
-    entries2 = load_po(path2)
-    if not entries1 or not entries2:
-        # A load_po már kiírta a hibaüzenetet, ha szükséges volt
-        return 1
-        
-    map1 = build_canonical_map(entries1)
-    map2 = build_canonical_map(entries2)
-    common_keys = set(map1.keys()) & set(map2.keys())
-    common_count = len(common_keys)
-    differences = 0
-
-    print(f"Összehasonlítás: {fn1} vs {fn2}")
-    print("\n" + "=" * 60)
-    print(f"{BOLD}{colored('Közös kanonikus msgid-k száma: ' + str(common_count), YELLOW)}")
+    fn1, fn2 = os.path.basename(path1), os.path.basename(path2)
+    e1, e2 = load_po(path1), load_po(path2)
+    m1, m2 = build_canonical_map(e1), build_canonical_map(e2)
+    common = set(m1.keys()) & set(m2.keys())
+    diffs = 0
+    html_entries = []
     
-    diff_list = []
+    print(f"Összehasonlítás: {fn1} vs {fn2} (Közös: {len(common)})")
     
-    for key in sorted(common_keys):
-        orig1, msgstr1, disp1 = map1[key]
-        orig2, msgstr2, disp2 = map2[key]
+    for k in sorted(common):
+        orig1, str1, d1 = m1[k]
+        orig2, str2, d2 = m2[k]
+        if not str1 and not str2: continue
         
-        if not msgstr1 and not msgstr2: # Mindkettő üres, átugorjuk
-            continue
-            
-        words1 = get_word_set(msgstr1)
-        words2 = get_word_set(msgstr2)
+        div, sim = check_divergence(str1, str2)
+        if not div: continue
         
-        if words1 != words2:
-            differences += 1
-            diff_list.append({
-                "display_msgid": disp1 or disp2 or key,
-                "orig_msgid1": orig1, "msgstr1": msgstr1, "words1": words1,
-                "orig_msgid2": orig2, "msgstr2": msgstr2, "words2": words2,
-                "key": key
-            })
-
-    print(f"{BOLD}{colored('Eltérő fordítások száma: ' + str(differences), RED)}{RESET}")
-    print("=" * 60 + "\n")
-
-    if differences == 0:
-        return 0
+        diffs += 1
+        ansi1, ansi2, hs1, hs2 = get_diff_viz(str1 or "", str2 or "")
         
-    for i, d in enumerate(diff_list, 1):
-        print(f"--- Eltérés #{i} ---")
-        print(f"Msgid (Tiszta): {colored(d['display_msgid'], RED)}")
-        print(f"Msgid ({fn1}):  {colored(d['orig_msgid1'], YELLOW)}")
-        print(f"Msgstr ({fn1}): {colored(d['msgstr1'] or '<üres>', BLUE)}")
-        print(f"Msgid ({fn2}):  {colored(d['orig_msgid2'], YELLOW)}")
-        print(f"Msgstr ({fn2}): {colored(d['msgstr2'] or '<üres>', MAGENTA)}")
+        # Konzol kimenet
+        print(f"{'-'*60}")
+        print(f"msgid: {d1}")
+        print(f"{fn1}: {ansi1}")
+        print(f"{fn2}: {ansi2}")
+        print(f"hasonlóság: {int(sim*100)}%")
+        print(f"{'-'*60}\n")
+        
+        # HTML kimenet
+        html_entries.append(f"""
+        <div class="entry">
+            <div class="entry-header">Msgid: {html.escape(d1)}</div>
+            <div class="entry-body diff-row">
+                <div class="diff-line del-line"><span class="label">- {html.escape(fn1)}:</span>{hs1}</div>
+                <div class="diff-line add-line"><span class="label">+ {html.escape(fn2)}:</span>{hs2}</div>
+            </div>
+            <div style="font-size:12px; color:#999; margin-top:5px">Hasonlóság: {int(sim*100)}%</div>
+        </div>
+        """)
 
-        t1 = check_tegezodes_usage(d['msgstr1'] or "")
-        t2 = check_tegezodes_usage(d['msgstr2'] or "")
-        if t1 or t2:
-            combined = "; ".join([t.replace('Tegező/utasító szavak: ', f"({fn1}) ") if t == t1 else t.replace('Tegező/utasító szavak: ', f"({fn2}) ") for t in (t1, t2) if t])
-            print(f"{CYAN}Megjegyzés: {combined}{RESET}")
-
-        if debug:
-            print(f"{CYAN}Debug - Kanonikus kulcs: '{d['key']}'{RESET}")
-            print(f"{CYAN}Debug - Szavak ({fn1}): {sorted(list(d['words1']))}{RESET}")
-            print(f"{CYAN}Debug - Szavak ({fn2}): {sorted(list(d['words2']))}{RESET}")
-        print("-" * 60)
+    print(f"Eltérő fordítások: {diffs}")
+    if diffs > 0:
+        stats_html = f'<div class="stats"><strong>Összehasonlítás:</strong> {fn1} vs {fn2}<br><strong>Eltérések:</strong> {diffs}</div>'
+        ask_to_save_report(html_entries, f"compare_{fn1}_{fn2}", f"Compare: {fn1} vs {fn2}", stats_html)
     return 0
 
 def run_fill(source_po: str, target_po: str, debug: bool = False, out_filename: Optional[str] = None, egyszavas: bool = False):
-    """
-    Kitölti a target_po-t a source_po-ból.
-    Ha egyszavas=False, kihagyja az 1 szavas vagy csak-helyőrző stringeket.
-    """
-    if not os.path.isfile(source_po):
-        print(f"{RED}Hiba: Forrásfájl nem található: {source_po}{RESET}", file=sys.stderr)
-        return 2
-    if not os.path.isfile(target_po):
-        print(f"{RED}Hiba: Célfájl nem található: {target_po}{RESET}", file=sys.stderr)
-        return 2
-
-    source_map = build_translation_map_for_fill(source_po)
-    if debug:
-        print(f"[DEBUG] Forrástérkép ({os.path.basename(source_po)}): {len(source_map)} kanonikus kulcs beolvasva.")
-
-    try:
-        with open(target_po, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    except Exception as e:
-        print(f"{RED}Hiba a célfájl olvasása közben ({target_po}): {e}{RESET}", file=sys.stderr)
-        return 1
-
-    preamble, blocks = split_file_into_entries(lines)
-    updated_blocks: List[List[str]] = []
-    total_checked = 0
-    updated_count = 0
-    skipped_single_word = 0
-    source_missing = 0
-    source_empty = 0
-    already_translated = 0
-
-    for block_idx, block in enumerate(blocks):
-        full_msgid, full_msgstr, plurals = parse_entry_block(block)
-
-        if not full_msgid: # Üres msgid (pl. a fejléc) átugrása
-            updated_blocks.append(block)
-            continue
-
-        total_checked += 1
-        key, display = canonicalize_msgid(full_msgid)
-
-        if not key:
-            updated_blocks.append(block)
-            continue
-
-        # Ellenőrizzük, hogy a célfájlban már van-e fordítás
-        target_is_empty = not full_msgstr.strip() and (not plurals or not any(v.strip() for v in plurals.values()))
-        if not target_is_empty:
-            already_translated +=1
-            updated_blocks.append(block)
-            if debug:
-                 print(f"[DEBUG] Kihagyva (már lefordítva a célfájlban): '{display[:50]}...'")
-            continue
-
-        # --- EGYSZAVAS SZŰRÉS ---
-        if not egyszavas: # Ha NINCS engedélyezve az egyszavas átvitel
-            word_count = get_word_count_from_display(display)
-            # A word_count 0 lesz, ha csak helyőrző, és 1, ha egy szó.
-            if word_count <= 1:
-                skipped_single_word += 1
-                updated_blocks.append(block) # Hozzáadjuk az eredeti (üres) blokkot
-                if debug:
-                    print(f"[DEBUG] Kihagyva (egyszavas/helyőrző): '{display[:50]}...' (Szószám: {word_count})")
-                continue # Ugrás a következő blokkra
-        # -----------------------------
-
-        # Megkeressük a forrástérképben
-        if key not in source_map:
-            source_missing += 1
-            updated_blocks.append(block)
-            if debug:
-                print(f"[DEBUG] Kihagyva (nincs forrás megfelelő): '{display[:50]}...' (Kulcs: '{key}')")
-            continue
-
-        source_orig_msgid, source_msgstr = source_map[key]
-        if not source_msgstr.strip(): # Ha a forrás fordítás üres
-            source_empty += 1
-            updated_blocks.append(block)
-            if debug:
-                 print(f"[DEBUG] Kihagyva (forrás fordítás üres): '{display[:50]}...'")
-            continue
-
-        # Placeholder-adaptáció
-        adapted_msgstr = source_msgstr
-        try:
-            adapted_msgstr = adapt_placeholders_using_msgids(source_msgstr, source_orig_msgid, full_msgid)
-            if debug and adapted_msgstr != source_msgstr:
-                print(f"[DEBUG] Helyőrzők adaptálva: '{display[:50]}...'")
-        except Exception as e:
-            if debug:
-                print(f"[DEBUG] Hiba a helyőrzők adaptálásakor msgid='{display[:50]}...': {e}")
-            # Hiba esetén az eredeti forrás msgstr-t használjuk
-
-        # Az új msgstr beillesztése a blokkba
-        has_singular = any(ln.lstrip().startswith("msgstr ") for ln in block)
-        has_plural_0 = any(ln.lstrip().startswith("msgstr[0]") for ln in block)
-
-        new_block = list(block) # Másolatot készítünk
-        if has_plural_0:
-            new_block = replace_msgstr_in_block(new_block, adapted_msgstr, plural_index=0)
-        elif has_singular:
-             new_block = replace_msgstr_in_block(new_block, adapted_msgstr, plural_index=None)
-        else: # Ha se sima msgstr, se msgstr[0] nem volt (csak msgid)
-             new_block = replace_msgstr_in_block(new_block, adapted_msgstr, plural_index=None)
-
-        # Megjelöljük fuzzy-vel
-        new_block = ensure_fuzzy_flag(new_block)
-        updated_blocks.append(new_block)
-        updated_count += 1
-        if debug:
-            print(f"[DEBUG] Kitöltve (fuzzy): msgid='{display[:50]}...' -> msgstr a forrásból (Kulcs: '{key}')")
-
-    if updated_count == 0:
-        print("Nem találtam kitöltendő (üres) msgstr-eket.")
-        if debug:
-            print(f"[DEBUG] Összes ellenőrzött: {total_checked}, ebből már lefordítva: {already_translated}, forrásban hiányzó: {source_missing}, forrásban üres: {source_empty}, kihagyva (egyszavas): {skipped_single_word}")
-        return 0
-
-    # Kimeneti fájlnév meghatározása
-    out_path = out_filename or os.path.splitext(target_po)[0] + "_kiegeszitett.po"
+    if not os.path.isfile(source_po) or not os.path.isfile(target_po): return 2
+    src_map = build_translation_map_for_fill(source_po)
+    s_fn, t_fn = os.path.basename(source_po), os.path.basename(target_po)
     
-    if write_po_file(out_path, preamble, updated_blocks, lines):
-        print(f"\nKész: {updated_count} bejegyzés lett kiegészítve (fuzzy-ként megjelölve).")
-        print(f"Új fájl: {MAGENTA}{out_path}{RESET}")
+    try:
+        with open(target_po, "r", encoding="utf-8") as f: lines = f.readlines()
+    except Exception: return 1
+    
+    preamble, blocks = split_file_into_entries(lines)
+    updated_blocks = []
+    updated_count = 0
+    divergence_list = []
+    
+    print(f"Kitöltés: {s_fn} -> {t_fn}")
+    
+    for block in blocks:
+        fid, fstr, plurals = parse_entry_block(block)
+        if not fid: updated_blocks.append(block); continue
         
-        # --- FIGYELMEZTETÉS AZ EGYSZAVAS STRINGEK MIATT ---
-        if not egyszavas and skipped_single_word > 0:
-            print(colored(f"\nFigyelmeztetés: {skipped_single_word} bejegyzés (egyszavas vagy csak helyőrző) nem lett átmásolva.", YELLOW))
-            print(colored(f"  Ha ezeket is át szeretné hozni, használja a '{CYAN}-egyszavas{YELLOW}' kapcsolót.", YELLOW))
-        # ----------------------------------------------------
+        key, disp = canonicalize_msgid(fid)
+        target_empty = not fstr.strip() and (not plurals or not any(v.strip() for v in plurals.values()))
+        
+        if key not in src_map:
+            updated_blocks.append(block); continue
+            
+        src_orig, src_str = src_map[key]
+        
+        if not target_empty:
+            div, sim = check_divergence(src_str, fstr)
+            if div:
+                divergence_list.append((disp, src_str, fstr))
+            updated_blocks.append(block); continue
+            
+        if not src_str.strip(): updated_blocks.append(block); continue
+        
+        if not egyszavas and get_word_count_from_display(disp) <= 1:
+            updated_blocks.append(block); continue
 
-        if debug:
-            print(f"[DEBUG] Összes ellenőrzött (érvényes msgid-vel): {total_checked}")
-            print(f"[DEBUG] Már lefordítva a célfájlban: {already_translated}")
-            print(f"[DEBUG] Forrásban hiányzó: {source_missing}")
-            print(f"[DEBUG] Forrásban üres fordítás: {source_empty}")
-            print(f"[DEBUG] Kihagyva (egyszavas/helyőrző): {skipped_single_word}")
-    else:
-        print(f"{RED}Hiba történt az új fájl írása közben.{RESET}")
-        return 1
+        # Kitöltés
+        try:
+            if len(extract_placeholders_list(src_orig)) == len(extract_placeholders_list(fid)):
+                src_str = adapt_placeholders_using_msgids(src_str, src_orig, fid)
+        except: pass
+        
+        new_b = list(block)
+        has_plural = any(l.lstrip().startswith("msgstr[0]") for l in block)
+        new_b = replace_msgstr_in_block(new_b, src_str, 0 if has_plural else None)
+        new_b = ensure_fuzzy_flag(new_b)
+        updated_blocks.append(new_b)
+        updated_count += 1
+        
+    print(f"Kitöltve: {updated_count}. Eltérés (nem felülírt): {len(divergence_list)}")
+    
+    if updated_count > 0:
+        out = out_filename or f"{os.path.splitext(target_po)[0]}_kiegeszitett.po"
+        write_po_file(out, preamble, updated_blocks, lines)
+        print(f"{GREEN}Létrehozva: {out}{RESET}")
+    
+    if divergence_list:
+        html_entries = []
+        # Konzol kimenet
+        print(f"\n{'='*60}")
+        print(f"ELTÉRÉSEK ({len(divergence_list)} találat)")
+        print(f"{'='*60}\n")
+        
+        for disp, s1, s2 in divergence_list:
+            ansi1, ansi2, hs1, hs2 = get_diff_viz(s1, s2)
+            # Konzol
+            print(f"{'-'*60}")
+            print(f"msgid: {disp}")
+            print(f"{s_fn}: {ansi1}")
+            print(f"{t_fn}: {ansi2}")
+            print(f"{'-'*60}\n")
+            
+            # HTML
+            html_entries.append(f"""
+            <div class="entry">
+                <div class="entry-header">Msgid: {html.escape(disp)}</div>
+                <div class="entry-body diff-row">
+                    <div class="diff-line del-line"><span class="label">{html.escape(s_fn)}:</span>{hs1}</div>
+                    <div class="diff-line add-line"><span class="label">{html.escape(t_fn)}:</span>{hs2}</div>
+                </div>
+            </div>
+            """)
+        stats_html = f'<div class="stats"><strong>Forrás:</strong> {s_fn}<br><strong>Cél:</strong> {t_fn}<br><strong>Eltérések:</strong> {len(divergence_list)}</div>'
+        ask_to_save_report(html_entries, f"divergence_{t_fn}_{s_fn}", f"Divergencia: {t_fn} vs {s_fn}", stats_html)
+
     return 0
 
+# --- Új Merge funkció ---
+def run_merge_enhu(eng_file: str, hu_file: str, output_file: Optional[str] = None):
+    """Angol és magyar fájlok összefésülése PO formátumba."""
+    # Fájlformátum ellenőrzés
+    eng_ext = os.path.splitext(eng_file)[1].lower()
+    hu_ext = os.path.splitext(hu_file)[1].lower()
+    
+    if eng_ext != hu_ext:
+        print(f"{RED}Hiba: A fájlok kiterjesztése nem egyezik: {eng_ext} vs {hu_ext}{RESET}")
+        return 1
+    
+    # Fájlok betöltése
+    eng_texts = load_texts_from_file(eng_file)
+    hu_texts = load_texts_from_file(hu_file)
+    
+    if not eng_texts or not hu_texts:
+        print(f"{RED}Hiba: Nem sikerült betölteni a fájlokat{RESET}")
+        return 1
+    
+    # Kulcsok összehasonlítása
+    eng_keys = set(eng_texts.keys())
+    hu_keys = set(hu_texts.keys())
+    
+    if eng_keys != hu_keys:
+        missing_in_hu = eng_keys - hu_keys
+        missing_in_eng = hu_keys - eng_keys
+        
+        if missing_in_hu:
+            print(f"{YELLOW}Figyelmeztetés: A magyar fájl hiányzó kulcsai: {missing_in_hu}{RESET}")
+        if missing_in_eng:
+            print(f"{YELLOW}Figyelmeztetés: Az angol fájl hiányzó kulcsai: {missing_in_eng}{RESET}")
+        
+        # Csak a közös kulcsokkal dolgozunk
+        common_keys = eng_keys & hu_keys
+        if not common_keys:
+            print(f"{RED}Hiba: Nincs közös kulcs a fájlok között{RESET}")
+            return 1
+    else:
+        common_keys = eng_keys
+    
+    # Output fájl nevének meghatározása
+    if not output_file:
+        base_name = os.path.splitext(hu_file)[0]
+        output_file = f"{base_name}_merged.po"
+    
+    # PO fájl létrehozása
+    try:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            # PO header
+            f.write('msgid ""\n')
+            f.write('msgstr ""\n')
+            f.write('"Project-Id-Version: \\n"\n')
+            f.write('"POT-Creation-Date: \\n"\n')
+            f.write('"PO-Revision-Date: \\n"\n')
+            f.write('"Last-Translator: \\n"\n')
+            f.write('"Language-Team: \\n"\n')
+            f.write('"Language: hu\\n"\n')
+            f.write('"MIME-Version: 1.0\\n"\n')
+            f.write('"Content-Type: text/plain; charset=UTF-8\\n"\n')
+            f.write('"Content-Transfer-Encoding: 8bit\\n"\n')
+            f.write('"X-Generator: \\n"\n')
+            f.write('\n')
+            
+            # Bejegyzések
+            for key in sorted(common_keys):
+                eng_text = eng_texts[key]
+                hu_text = hu_texts[key]
+                
+                if not eng_text or not hu_text:
+                    continue
+                
+                # msgctxt
+                f.write(f'msgctxt "{key}"\n')
+                
+                # msgid (angol)
+                f.write(f'msgid "{eng_text}"\n')
+                
+                # msgstr (magyar)
+                f.write(f'msgstr "{hu_text}"\n')
+                f.write('\n')
+        
+        print(f"{GREEN}Kész! Összefésült PO fájl: {output_file}{RESET}")
+        return 0
+        
+    except Exception as e:
+        print(f"{RED}Hiba az összefésülés során: {e}{RESET}")
+        return 1
 
-# --- Fő (main) funkció ---
+# =============================================================================
+# MAIN
+# =============================================================================
 
-def main(argv: List[str]) -> int:
-    print("--- SCRIPT INDUL ---") # <<< A KÉRT DIAGNOSZTIKAI SOR BEILLESZTVE
-    
-    # Argumentumok feldolgozása
-    parser = argparse.ArgumentParser(description="PO Tool", add_help=False)
-    
-    # Kapcsolók
-    parser.add_argument("-h", action="store_true", help="Súgó megjelenítése")
-    parser.add_argument("--debug", action="store_true", help="Debug kimenet")
-    
-    # Egyfájlos kapcsolók
-    single_file_group = parser.add_argument_group("Egyfájlos műveletek")
-    single_file_group.add_argument("-formatcheck", action="store_true", help="Formátum-ellenőrzés (CDATA, MD, HTML)")
-    single_file_group.add_argument("-irasjelek", action="store_true", help="Írásjelek javítása és új fájl írása")
-    single_file_group.add_argument("-spellcheck", action="store_true", help="Helyesírás-ellenőrzés")
-    single_file_group.add_argument("-tegezodes", action="store_true", help="Tegező/utasító szavak keresése")
+def print_help():
+    print(f"""
+{BOLD}Unified PO Tool v2.0 - Használat{RESET}
 
-    # Kétfájlos kapcsolók
-    two_file_group = parser.add_argument_group("Kétfájlos műveletek")
-    two_file_group.add_argument("-compare", action="store_true", help="Két fájl fordításainak összehasonlítása")
-    two_file_group.add_argument("-filland", action="store_true", help="Kitöltés (pl. iOS -> Android)")
-    two_file_group.add_argument("-fillios", action="store_true", help="Kitöltés (pl. Android -> iOS)")
-    two_file_group.add_argument("-egyszavas", action="store_true", help="Egyszavas/helyőrző stringek átvitele -fill kapcsolókkal")
+{YELLOW}Szövegkinyerés:{RESET}
+  {sys.argv[0]} {CYAN}-extract{RESET} "*.po"    PO fájlok fordításainak kinyerése txt fájlokba.
 
-    # Fájlok (pozíciós)
-    parser.add_argument("files", nargs="*", help=".po fájl(ok)")
+{YELLOW}Egy fájl műveletek:{RESET}
+  {sys.argv[0]} <fájl.po> [kapcsoló]
+
+  {CYAN}-formatcheck{RESET}   Formátum (CDATA, HTML tag, Markdown) ellenőrzése.
+  {CYAN}-irasjelek{RESET}     Idézőjelek („”), ellipszisek (…), kötőjelek (-) javítása.
+  {CYAN}-spellcheck{RESET}    Helyesírás-ellenőrzés (Hunspell) PO, JSON, YML, PROPERTIES fájlokra.
+                  Blacklist támogatás (spellcheck_blacklist.txt)
+                  Menü: 1) HTML export, 2) Blacklist frissítés, 3) Kilépés
+  {CYAN}-tegezodes{RESET}     {BOLD}NLP alapú{RESET} tegeződés-ellenőrzés (Spacy).
+                  Igék, birtokosok, felszólító mód keresése.
+                  Gyönyörű HTML riportot készít.
+
+{YELLOW}Két fájl műveletek:{RESET}
+  {sys.argv[0]} <fájl1.po> <fájl2.po> [kapcsoló]
+
+  {CYAN}-compare{RESET}       Diff-szerű összehasonlítás.
+  {CYAN}-fillios{RESET}       Android -> iOS kitöltés (fájl2 a cél).
+  {CYAN}-filland{RESET}       iOS -> Android kitöltés (fájl2 a cél).
+  {CYAN}-egyszavas{RESET}     Egyszavas bejegyzések átvitelének engedélyezése (-fill*-hez).
+
+{YELLOW}Merge funkció (új):{RESET}
+  {sys.argv[0]} {CYAN}-mergeenhu{RESET} <fájl1> <fájl2> [output_fájl]
+                  Két fájl összefésülése PO formátumba.
+                  Első fájl → msgid (általában angol)
+                  Második fájl → msgstr (általában magyar)
+                  msgctxt → az eredeti kulcs neve
+                  Támogatott formátumok: .json, .yml, .properties
+""")
+
+def main():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("-h", action="store_true")
+    parser.add_argument("--debug", action="store_true")
     
-    args = parser.parse_args(argv[1:])
+    # Extract
+    parser.add_argument("-extract", nargs="?", const="*.po", help="Pattern")
+
+    # Single File
+    parser.add_argument("-formatcheck", action="store_true")
+    parser.add_argument("-irasjelek", action="store_true")
+    parser.add_argument("-spellcheck", action="store_true")
+    parser.add_argument("-tegezodes", action="store_true")
     
-    num_files = len(args.files)
+    # Two Files
+    parser.add_argument("-compare", action="store_true")
+    parser.add_argument("-filland", action="store_true")
+    parser.add_argument("-fillios", action="store_true")
+    parser.add_argument("-egyszavas", action="store_true")
+    
+    # Merge
+    parser.add_argument("-mergeenhu", action="store_true")
+    
+    parser.add_argument("files", nargs="*")
+    
+    args, unknown = parser.parse_known_args()
+    
+    # Extract kezelése
+    if args.extract:
+        pattern = args.extract
+        if args.extract == "*.po" and args.files:
+            pattern = args.files[0]
+        return run_extract_translations(pattern)
+
+    if args.h or not args.files:
+        print_help()
+        return 0
+
+    files = args.files
     debug = args.debug
 
-    # --- Súgó kezelése ---
-    if args.h or (num_files == 0 and not any([args.formatcheck, args.irasjelek, args.spellcheck, args.tegezodes, args.compare, args.filland, args.fillios, args.egyszavas])):
+    if len(files) == 1:
+        path = files[0]
+        if args.tegezodes: return run_tegezodes_spacy(path)
+        if args.formatcheck: return run_lint_mode(path, {"format"}, debug)
+        if args.spellcheck: return run_spellcheck_multiformat(path, debug)
+        if args.irasjelek: return run_irasjelek_fix(path, debug)
+        print(f"{RED}Egy fájl esetén válasszon kapcsolót!{RESET}")
         print_help()
-        return 0
+        return 1
 
-    # --- Fájlok számának ellenőrzése ---
-    if num_files == 0:
-        print(f"{RED}Hiba: Nem adott meg .po fájlt.{RESET}")
-        print_help()
-        return 1
-        
-    if num_files > 2:
-        print(f"{RED}Hiba: Túl sok fájl megadva (maximum 2).{RESET}")
-        print_help()
-        return 1
+    if len(files) == 2:
+        p1, p2 = files
+        if args.compare: return run_compare(p1, p2, debug)
+        if args.fillios: 
+            return run_fill(p1, p2, debug, f"fillios_{'egyszavas_' if args.egyszavas else ''}{os.path.basename(p2)}", args.egyszavas)
+        if args.filland:
+            return run_fill(p1, p2, debug, f"filland_{'egyszavas_' if args.egyszavas else ''}{os.path.basename(p2)}", args.egyszavas)
     
-    # --- Egyfájlos mód ---
-    if num_files == 1:
-        path = args.files[0]
-        if not os.path.isfile(path):
-            print(f"{RED}Hiba: A fájl nem található: {path}{RESET}", file=sys.stderr)
-            return 1
-            
-        if args.formatcheck:
-            return run_lint_mode(path, {"format"}, debug)
-        elif args.tegezodes:
-            return run_lint_mode(path, {"tegezodes"}, debug)
-        elif args.spellcheck:
-            return run_spellcheck(path, debug)
-        elif args.irasjelek:
-            return run_irasjelek_fix(path, debug)
-        elif args.egyszavas or args.compare or args.filland or args.fillios:
-            print(f"{RED}Hiba: A(z) '{argv[2]}' kapcsoló két fájlt igényel.{RESET}")
+    # Merge funkció kezelése (2 vagy 3 fájl)
+    if args.mergeenhu:
+        if len(files) < 2:
+            print(f"{RED}Hiba: -mergeenhu-hez legalább 2 fájl kell{RESET}")
             print_help()
             return 1
-        else:
-            # Ha csak egy fájlt ad meg kapcsoló nélkül
-            print(f"{RED}Hiba: Egy fájl esetén kötelező kapcsolót megadni.{RESET}")
-            print_help()
-            return 1
-
-    # --- Kétfájlos mód ---
-    if num_files == 2:
-        path1, path2 = args.files
-        if not os.path.isfile(path1):
-            print(f"{RED}Hiba: A fájl nem található: {path1}{RESET}", file=sys.stderr)
-            return 1
-        if not os.path.isfile(path2):
-            print(f"{RED}Hiba: A fájl nem található: {path2}{RESET}", file=sys.stderr)
-            return 1
-
-        if args.compare:
-            return run_compare(path1, path2, debug)
-        elif args.fillios:
-            # file1 = Android (forrás), file2 = iOS (cél)
-            target_base_name = os.path.basename(path2)
-            # Név generálása: fillios_egyszavas_fajl.po vagy fillios_fajl.po
-            out_name = f"fillios_{'egyszavas_' if args.egyszavas else ''}{target_base_name}"
-            return run_fill(path1, path2, debug, out_name, egyszavas=args.egyszavas)
-        elif args.filland:
-            # file1 = iOS (forrás), file2 = Android (cél)
-            target_base_name = os.path.basename(path2)
-            out_name = f"filland_{'egyszavas_' if args.egyszavas else ''}{target_base_name}"
-            return run_fill(path1, path2, debug, out_name, egyszavas=args.egyszavas)
-        elif args.egyszavas: # Ha csak -egyszavas van megadva, de fill* nincs
-            print(f"{RED}Hiba: A '-egyszavas' kapcsoló csak a '-fillios' vagy '-filland' kapcsolóval együtt érvényes.{RESET}")
-            print_help()
-            return 1
-        else:
-            # Ha két fájlt ad meg kapcsoló nélkül
-            print(f"{RED}Hiba: Két fájl esetén kötelező kapcsolót megadni.{RESET}")
-            print_help()
-            return 1
-            
-    return 0
+        
+        eng_file = files[0]
+        hu_file = files[1]
+        output_file = files[2] if len(files) > 2 else None
+        
+        return run_merge_enhu(eng_file, hu_file, output_file)
+    
+    print(f"{RED}Hibás paraméterek.{RESET}")
+    print_help()
+    return 1
 
 if __name__ == "__main__":
-    exit_code = main(sys.argv)
-    sys.exit(exit_code)
+    sys.exit(main())
